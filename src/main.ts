@@ -3,9 +3,10 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  await app.listen(process.env.PORT ?? 3000);
+  const port = (globalThis as { process?: { env?: { PORT?: string } } }).process?.env?.PORT ?? 3000;
+  await app.listen(port);
 }
 bootstrap().catch((err) => {
   console.error(err);
-  process.exit(1);
+  (globalThis as { process?: { exit?: (code: number) => void } }).process?.exit?.(1);
 });
