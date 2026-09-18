@@ -86,3 +86,9 @@ No test script uses Jest. Do not add Jest. Do not run `nest start` directly — 
 ### 5. When adding dependencies
 - Check `package.json` first. Prefer Nest ecosystem packages. Use `npm install -S <pkg>` and import in a feature module, not in `main.ts` unless it's global middleware/config.
 - If adding validation, use `class-validator` + `class-transformer` with a global `ValidationPipe`. If adding config, use `@nestjs/config`.
+
+### 6. Environment / Shell (Windows-only)
+- Running on Windows machine — use PowerShell (`powershell.exe`) only.
+- Do not use Linux bash commands (`ls`, `cat`, `grep`, `sed`, `awk`, `rm -rf`, `&&`, `||`, `/` paths, etc.).
+- Use PowerShell equivalents: `Get-ChildItem`, `Get-Content`, `Select-String`, `Remove-Item`, `;` to chain commands.
+- Use `\` path separators and quote paths with spaces.
