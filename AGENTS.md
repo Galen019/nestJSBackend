@@ -30,10 +30,10 @@ Entry flow: `src/main.ts:4 bootstrap()` → `AppModule` → `AppController (@Con
 
 Configs:
 - `nest-cli.json`: `sourceRoot: src`, `deleteOutDir: true`
-- `tsconfig.json`: `rootDir ./src`, `outDir ./dist`, `experimentalDecorators`, `emitDecoratorMetadata` (required for Nest DI — do not remove), `strictNullChecks`, `skipLibCheck`
+- `tsconfig.json`: `rootDir ./src`, `outDir ./dist`, `experimentalDecorators`, `emitDecoratorMetadata` (required for Nest DI — do not remove), `strict` (full strict mode, not just `strictNullChecks`), `skipLibCheck`
 - `vitest.config.mts`: unit glob `src/**/*.spec.ts`
 - `vitest.e2e.config.mts`: e2e glob `test/**/*.e2e-spec.ts`, `pool: forks`
-- `eslint.config.mjs`: `recommendedTypeChecked` with `projectService`, relaxed only for `no-explicit-any: off`, `no-floating-promises/no-unsafe-argument: warn`; type-checking disabled for `*.spec.ts` and `test/**`
+- `eslint.config.mjs`: `recommendedTypeChecked` with `projectService`, `no-explicit-any/no-floating-promises/no-unsafe-argument: error`; type-checking disabled for `*.spec.ts` and `test/**`
 - `docker-compose.yml`: `app` service, `${PORT:-3000}:${PORT:-3000}`, `NODE_ENV=production`
 
 ## Commands (use these, don't invent others)
@@ -62,14 +62,14 @@ No test script uses Jest. Do not add Jest. Do not run `nest start` directly — 
 - **DI first:** Register new providers in the `@Module({ controllers, providers })` in `app.module.ts` or a feature module. Never `new Service()` manually in production code.
 - **Feature structure:** For a new domain `foo`, create `src/foo/foo.module.ts`, `foo.controller.ts`, `foo.service.ts`, `foo.service.spec.ts` (and DTOs under `src/foo/dto/`). Import `FooModule` into `AppModule.imports`. Use Nest CLI schematics naming: `*.module.ts`, `*.controller.ts`, `*.service.ts`, `*.spec.ts`.
 - **Decorators required:** Keep `experimentalDecorators` + `emitDecoratorMetadata` semantics. Constructor injection must use TypeScript types (interfaces alone break DI — use classes/abstracts or `@Inject()` tokens).
-- **Async:** Prefer `async/await`. Never leave floating promises — ESLint warns on `no-floating-promises`; always `await` or `return` or `void` explicitly.
+- **Async:** Prefer `async/await`. Never leave floating promises — ESLint errors on `no-floating-promises`; always `await` or `return` or `void` explicitly.
 - **Config/env:** Read port via `process.env.PORT ?? 3000` pattern in `main.ts`. For new env vars, use `??` defaults and add to `docker-compose.yml` + `Dockerfile` if needed at runtime.
 
 ### 2. TypeScript style
-- `strictNullChecks` is on. Handle `null/undefined` explicitly. No `any` unless necessary (`no-explicit-any` is off but still avoid it — prefer `unknown` + narrowing).
+- `strict` is on (full strict mode). Handle `null/undefined` explicitly. No `any` (`no-explicit-any` is error — prefer `unknown` + narrowing).
 - `forceConsistentCasingInFileNames: true` — imports must match exact file casing.
 - Prettier: default `.prettierrc`. Run `npm run format` on touched files. ESLint `sourceType: commonjs` — use `import` syntax (compiled to CJS), not `require`.
-- Avoid unsafe args: `no-unsafe-argument` is warn — validate external input at boundaries before passing to typed services.
+- Avoid unsafe args: `no-unsafe-argument` is error — validate external input at boundaries before passing to typed services.
 
 ### 3. Testing requirements
 - Unit tests live next to source: `src/**/*.spec.ts`, run with `npm test`. Use pattern from `src/app.controller.spec.ts:6`: `Test.createTestingModule({ controllers, providers }).compile()`.

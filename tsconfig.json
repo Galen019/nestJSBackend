@@ -14,7 +14,7 @@
     "paths": {"*": ["./*"]},
     "incremental": true,
     "skipLibCheck": true,
-    "strictNullChecks": true,
+    "strict": true,
     "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*"],
