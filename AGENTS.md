@@ -80,7 +80,8 @@ No test script uses Jest. Do not add Jest. Do not run `nest start` directly — 
 - Read `src/app.module.ts`, `package.json`, and relevant spec before editing.
 - Smallest diff: don't reformat untouched files, don't upgrade Nest 12 / Node 22 / Vitest 5 unless asked.
 - Don't edit `dist/`, `coverage/`, `node_modules/`, `*.tsbuildinfo`.
-- After code changes, verify in order: `npm run lint` → `npm test` → `npm run test:e2e` → `npm run build`. Fix lint/type errors before claiming done.
+- Do not run `npm test`, `npm run test:e2e`, or `npm run lint` unless specifically directed to by the user.
+- After code changes, verify with `npm run build` only (unless the user explicitly requests lint/tests). Fix type errors before claiming done.
 - Docker changes: keep non-root `USER node`, `npm ci --omit=dev`, `EXPOSE 3000`, `CMD ["node", "dist/main"]`.
 
 ### 5. When adding dependencies
