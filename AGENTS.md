@@ -2,16 +2,18 @@
 
 ## What this codebase is
 
-Minimal **NestJS 12 + TypeScript + Node 22** backend starter (Express platform).
-Currently just a Hello World API: `GET / -> "Hello World!"`.
+**NestJS 12 + TypeScript + Node 22** backend starter (Express platform).
 
 Stack:
 - Runtime: Node 22 Alpine, TypeScript 5.7, `target ES2023`, `module commonjs`
 - Framework: `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `rxjs`, `reflect-metadata`
+- Cache/store: `redis` v6 client (`RedisClientType`) + `redis:7-alpine` service in `docker-compose.yml`
+- Redis wiring: `src/redis/redis.module.ts` provides `REDIS_CLIENT` via `createClient({ socket: { host, port }, password, disableOfflineQueue: true })`; `src/redis/redis.service.ts` connects on `onModuleInit` with 10 attempts of exponential backoff (500ms → 5000ms cap), logs `error` events, quits on `onModuleDestroy` if `isOpen`; `GET /health` pings Redis (`ok/up`, else 503 `degraded/down`)
+- Env: `REDIS_HOST` (default `localhost`, `redis` in compose), `REDIS_PORT` (default `6379`, validated 1–65535), `REDIS_PASSWORD` (optional; compose passes it to both `app` and `redis-server --requirepass`)
 - Tests: **Vitest 5** (not Jest) + `supertest` for e2e, `@nestjs/testing` for DI
 - Lint/format: ESLint 9 flat config + `typescript-eslint` + Prettier
 - Build/run: `@nestjs/cli`, `nest build`, `node dist/main`
-- Deploy: Multi-stage `Dockerfile` (build → production, non-root `node` user) + `docker-compose.yml`
+- Deploy: Multi-stage `Dockerfile` (build → production, non-root `node` user) + `docker-compose.yml` (`app` `depends_on: redis` `service_healthy`)
 
 Source layout:
 ```
@@ -21,12 +23,16 @@ src/
   app.controller.ts     # HTTP layer, thin, delegates to service
   app.service.ts        # business logic (@Injectable)
   app.controller.spec.ts# unit test (vitest)
+  health/health.controller.ts # GET /health, pings Redis via RedisService
+  redis/redis.module.ts       # provides REDIS_CLIENT + RedisService
+  redis/redis.service.ts      # connect/retry/quit/ping wrapper
+  redis/redis.constants.ts    # REDIS_CLIENT token + REDIS_* env parsing
 test/
   app.e2e-spec.ts       # e2e test via supertest
 dist/                   # build output (generated, don't edit)
 ```
 
-Entry flow: `src/main.ts:4 bootstrap()` → `AppModule` → `AppController (@Controller())` → `AppService.getHello()`.
+Entry flow: `src/main.ts:4 bootstrap()` → `AppModule` (+ `RedisModule`) → `AppController (@Controller())` → `AppService.getHello()`; `HealthController (@Controller('health'))` → `RedisService.ping()`.
 
 Configs:
 - `nest-cli.json`: `sourceRoot: src`, `deleteOutDir: true`
@@ -70,17 +76,20 @@ No test script uses Jest. Do not add Jest. Do not run `nest start` directly — 
 - `forceConsistentCasingInFileNames: true` — imports must match exact file casing.
 - Prettier: default `.prettierrc`. Run `npm run format` on touched files. ESLint `sourceType: commonjs` — use `import` syntax (compiled to CJS), not `require`.
 - Avoid unsafe args: `no-unsafe-argument` is error — validate external input at boundaries before passing to typed services.
+- Every `*.ts` file must have a top-level `/** ... */` comment explaining high-level functionality. Use bullet-point style, not conversational English. See pattern in `src\redis\redis.service.spec.ts:7`.
 
 ### 3. Testing requirements
 - Unit tests live next to source: `src/**/*.spec.ts`, run with `npm test`. Use pattern from `src/app.controller.spec.ts:6`: `Test.createTestingModule({ controllers, providers }).compile()`.
 - E2E tests live in `test/*.e2e-spec.ts`, run with `npm run test:e2e`. Use pattern from `test/app.e2e-spec.ts:7`: `createNestApplication()` + `app.init()` + `supertest(app.getHttpServer())`, always `await app.close()` in `afterEach`.
 - Every new controller/service must ship with a unit spec; every new route must have e2e coverage. Do not break existing `GET /` assertion (`expect('Hello World!')`).
+- Every `*.spec.ts` and `*.e2e-spec.ts` must start with a top-level `/** ... */` comment describing what the test suite covers (mocks used, lifecycle/behavior under test, success vs. failure cases). Use bullet-point style, not conversational English. See pattern in `src\redis\redis.service.spec.ts:7`.
 
 ### 4. Safe edit rules for agents
 - Read `src/app.module.ts`, `package.json`, and relevant spec before editing.
 - Smallest diff: don't reformat untouched files, don't upgrade Nest 12 / Node 22 / Vitest 5 unless asked.
 - Don't edit `dist/`, `coverage/`, `node_modules/`, `*.tsbuildinfo`.
 - Do not run `npm test`, `npm run test:e2e`, or `npm run lint` unless specifically directed to by the user.
+- Do not run `npm run build` for comments only changes
 - After code changes, verify with `npm run build` only (unless the user explicitly requests lint/tests). Fix type errors before claiming done.
 - Docker changes: keep non-root `USER node`, `npm ci --omit=dev`, `EXPOSE 3000`, `CMD ["node", "dist/main"]`.
 

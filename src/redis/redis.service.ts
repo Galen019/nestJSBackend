@@ -16,6 +16,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Lifecycle wrapper around the injected `REDIS_CLIENT`.
+ *
+ * connects on module init with bounded exponential-backoff retries
+ * logs client `error` events without crashing
+ * quits gracefully on module destroy when the client is open
+ * exposes `ping()`/`isReady()` for health checks and readiness probes.
+ */
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);

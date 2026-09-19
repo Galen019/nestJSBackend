@@ -1,3 +1,9 @@
+/**
+ * Redis DI token and env config.
+ *
+ * - REDIS_CLIENT: injection token
+ * - getRedisConfig: reads REDIS_HOST/PORT/PASSWORD
+ */
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
 export interface RedisConfig {

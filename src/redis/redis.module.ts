@@ -3,6 +3,13 @@ import { createClient, type RedisClientType } from 'redis';
 import { REDIS_CLIENT, getRedisConfig } from './redis.constants';
 import { RedisService } from './redis.service';
 
+/**
+ * Redis DI module.
+ *
+ * - Provides REDIS_CLIENT via factory from REDIS_* env
+ * - Registers/exports RedisService
+ * - Socket: host/port, capped reconnect, password, no offline queue
+ */
 @Module({
   providers: [
     {

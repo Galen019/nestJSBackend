@@ -4,6 +4,13 @@ import type { RedisClientType } from 'redis';
 import { REDIS_CLIENT } from './redis.constants';
 import { RedisService } from './redis.service';
 
+/**
+ * Test suite for RedisService with mocked Redis client.
+ *
+ * - onModuleInit: error listener, connect, retry, exhaust
+ * - ping: delegates to client
+ * - onModuleDestroy: quit if open, skip if closed
+ */
 function createClientFake() {
   return {
     isOpen: false,

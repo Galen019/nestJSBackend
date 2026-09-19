@@ -4,6 +4,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RedisService } from '../redis/redis.service';
 import { HealthController } from './health.controller';
 
+/**
+ * HealthController.check() with mocked RedisService.
+ *
+ * - check: ok/up on ping resolve, 503 on ping reject
+ */
 describe('HealthController', () => {
   let controller: HealthController;
   let ping: ReturnType<typeof vi.fn<() => Promise<string>>>;

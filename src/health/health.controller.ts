@@ -10,6 +10,13 @@ interface HealthResponse {
   redis: string;
 }
 
+/**
+ * Readiness probe for Redis dependency.
+ *
+ * - GET /health: pings Redis via RedisService
+ * - Success: `{ status: 'ok', redis: 'up' }`
+ * - Failure: throws 503 `{ status: 'degraded', redis: 'down' }`
+ */
 @Controller('health')
 export class HealthController {
   constructor(private readonly redisService: RedisService) {}
