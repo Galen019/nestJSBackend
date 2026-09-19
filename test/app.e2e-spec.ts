@@ -3,6 +3,7 @@ import { INestApplication } from '@nestjs/common';
 import { describe, it, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import { AppModule } from './../src/app.module';
+import { RedisService } from './../src/redis/redis.service';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -10,7 +11,10 @@ describe('AppController (e2e)', () => {
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideProvider(RedisService)
+      .useValue({ ping: async () => 'PONG', isReady: () => true })
+      .compile();
 
     app = moduleFixture.createNestApplication();
     await app.init();
@@ -25,5 +29,12 @@ describe('AppController (e2e)', () => {
       .get('/')
       .expect(200)
       .expect('Hello World!');
+  });
+
+  it('/health (GET)', () => {
+    return request(app.getHttpServer())
+      .get('/health')
+      .expect(200)
+      .expect({ status: 'ok', redis: 'up' });
   });
 });
