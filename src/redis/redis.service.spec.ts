@@ -145,7 +145,11 @@ describe('RedisService', () => {
       service = module.get<RedisService>(RedisService);
 
       await expect(service.set('key', 'value')).resolves.toBe('OK');
-      expect(client.set).toHaveBeenCalledWith('key', 'value');
+
+      // applies default 1-hour TTL when no expiration is specified
+      expect(client.set).toHaveBeenCalledWith('key', 'value', {
+        expiration: { type: 'EX', value: 3600 },
+      });
 
       await module.close();
     });
