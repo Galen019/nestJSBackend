@@ -5,7 +5,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
-import type { RedisClientType } from 'redis';
+import type { RedisClientType, SetOptions } from 'redis';
 import { REDIS_CLIENT } from './redis.constants';
 
 const MAX_CONNECT_ATTEMPTS = 10;
@@ -74,6 +74,61 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
 
   async ping(): Promise<string> {
     return this.client.ping();
+  }
+
+  /**
+   * Creates a key:value entry in Redis, forwarding full set options.
+   *
+   * - validates the key is a non-empty string before calling Redis
+   * - delegates to `client.set`, passing `options` through verbatim when given
+   * - resolves with 'OK' (or prior value when `GET` is set, null when NX/XX skips)
+   * - rejects with the client error when Redis fails.
+   *
+   * @param key Redis key to create.
+   * @param value String value to store.
+   * @param options Full set options (expiration, condition, GET).
+   * @return The Redis SET reply.
+   */
+  async set(
+    key: string,
+    value: string,
+    options?: SetOptions,
+  ): Promise<string | null> {
+    this.assertValidKey(key);
+    if (options === undefined) {
+      return this.client.set(key, value);
+    }
+    return this.client.set(key, value, options);
+  }
+
+  /**
+   * Reads a value back from Redis by key.
+   *
+   * - validates the key is a non-empty string before calling Redis
+   * - delegates to `client.get`
+   * - resolves with the stored string, or null on a cache miss
+   * - rejects with the client error when Redis fails.
+   *
+   * @param key Redis key to read.
+   * @return The stored value, or null when the key does not exist.
+   */
+  async get(key: string): Promise<string | null> {
+    this.assertValidKey(key);
+    return this.client.get(key);
+  }
+
+  /**
+   * Rejects empty or whitespace-only keys before Redis is called.
+   *
+   * - throws when `key` is not a non-empty string
+   * - otherwise returns without effect.
+   *
+   * @param key Candidate Redis key.
+   */
+  private assertValidKey(key: string): void {
+    if (typeof key !== 'string' || key.trim().length === 0) {
+      throw new Error('Redis key must be a non-empty string');
+    }
   }
 
   isReady(): boolean {

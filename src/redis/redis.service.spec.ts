@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { RedisClientType } from 'redis';
+import type { RedisClientType, SetOptions } from 'redis';
 import { REDIS_CLIENT } from './redis.constants';
 import { RedisService } from './redis.service';
 
@@ -9,6 +9,8 @@ import { RedisService } from './redis.service';
  *
  * - onModuleInit: error listener, connect, retry, exhaust
  * - ping: delegates to client
+ * - set: delegates key/value/options, validates key, propagates errors
+ * - get: delegates key, validates key, resolves value or null
  * - onModuleDestroy: quit if open, skip if closed
  */
 
@@ -16,7 +18,7 @@ import { RedisService } from './redis.service';
  * Creates a fresh mocked Redis client for DI.
  *
  * - defaults `isOpen`/`isReady` to false
- * - stubs `connect`/`quit`/`ping`/`on` with vitest mocks.
+ * - stubs `connect`/`quit`/`ping`/`set`/`get`/`on` with vitest mocks.
  */
 function createClientFake() {
   return {
@@ -25,6 +27,18 @@ function createClientFake() {
     connect: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
     quit: vi.fn<() => Promise<string>>().mockResolvedValue('OK'),
     ping: vi.fn<() => Promise<string>>().mockResolvedValue('PONG'),
+    set: vi
+      .fn<
+        (
+          key: string,
+          value: string,
+          options?: SetOptions,
+        ) => Promise<string | null>
+      >()
+      .mockResolvedValue('OK'),
+    get: vi
+      .fn<(key: string) => Promise<string | null>>()
+      .mockResolvedValue(null),
     on: vi.fn<() => unknown>().mockReturnValue(undefined),
   };
 }
@@ -121,6 +135,79 @@ describe('RedisService', () => {
       service = module.get<RedisService>(RedisService);
 
       await expect(service.ping()).resolves.toBe('PONG');
+      await module.close();
+    });
+  });
+
+  describe('set', () => {
+    it('delegates key and value and resolves OK', async () => {
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.set('key', 'value')).resolves.toBe('OK');
+      expect(client.set).toHaveBeenCalledWith('key', 'value');
+
+      await module.close();
+    });
+
+    it('forwards full set options verbatim', async () => {
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+      const options: SetOptions = {
+        expiration: { type: 'EX', value: 60 },
+        condition: 'NX',
+      };
+
+      await service.set('key', 'value', options);
+
+      expect(client.set).toHaveBeenCalledWith('key', 'value', options);
+      await module.close();
+    });
+
+    it('rejects empty keys without calling the client', async () => {
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.set('   ', 'value')).rejects.toThrow();
+      expect(client.set).not.toHaveBeenCalled();
+      await module.close();
+    });
+
+    it('propagates client errors', async () => {
+      client.set.mockRejectedValueOnce(new Error('READONLY'));
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.set('key', 'value')).rejects.toThrow('READONLY');
+      await module.close();
+    });
+  });
+
+  describe('get', () => {
+    it('delegates key and resolves the stored value', async () => {
+      client.get.mockResolvedValueOnce('value');
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.get('key')).resolves.toBe('value');
+      expect(client.get).toHaveBeenCalledWith('key');
+      await module.close();
+    });
+
+    it('resolves null on a cache miss', async () => {
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.get('missing')).resolves.toBeNull();
+      await module.close();
+    });
+
+    it('rejects empty keys without calling the client', async () => {
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.get('')).rejects.toThrow();
+      expect(client.get).not.toHaveBeenCalled();
       await module.close();
     });
   });
