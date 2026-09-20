@@ -11,6 +11,13 @@ import { RedisService } from './redis.service';
  * - ping: delegates to client
  * - onModuleDestroy: quit if open, skip if closed
  */
+
+/**
+ * Creates a fresh mocked Redis client for DI.
+ *
+ * - defaults `isOpen`/`isReady` to false
+ * - stubs `connect`/`quit`/`ping`/`on` with vitest mocks.
+ */
 function createClientFake() {
   return {
     isOpen: false,
@@ -28,6 +35,12 @@ describe('RedisService', () => {
   let service: RedisService;
   let client: ClientFake;
 
+  /**
+   * Builds a testing module with the mocked REDIS_CLIENT.
+   *
+   * - provides current `client` fake as REDIS_CLIENT value
+   * - returns compiled TestingModule for service resolution.
+   */
   async function compile(): Promise<TestingModule> {
     return Test.createTestingModule({
       providers: [

@@ -19,8 +19,6 @@ function sleep(ms: number): Promise<void> {
 /**
  * Lifecycle wrapper around the injected `REDIS_CLIENT`.
  *
- * connects on module init with bounded exponential-backoff retries
- * logs client `error` events without crashing
  * quits gracefully on module destroy when the client is open
  * exposes `ping()`/`isReady()` for health checks and readiness probes.
  */
@@ -36,6 +34,13 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Connects to Redis on module init with bounded exponential-backoff retries.
+   *
+   * - attempts `client.connect()` up to MAX_CONNECT_ATTEMPTS times
+   * - waits with exponential delay capped at MAX_RETRY_DELAY_MS between attempts
+   * - throws the last error when all attempts fail.
+   */
   async onModuleInit(): Promise<void> {
     let lastError: unknown;
     for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt++) {

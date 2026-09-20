@@ -71,12 +71,28 @@ No test script uses Jest. Do not add Jest. Do not run `nest start` directly — 
 - **Async:** Prefer `async/await`. Never leave floating promises — ESLint errors on `no-floating-promises`; always `await` or `return` or `void` explicitly.
 - **Config/env:** Read port via `process.env.PORT ?? 3000` pattern in `main.ts`. For new env vars, use `??` defaults and add to `docker-compose.yml` + `Dockerfile` if needed at runtime.
 
-### 2. TypeScript style
-- `strict` is on (full strict mode). Handle `null/undefined` explicitly. No `any` (`no-explicit-any` is error — prefer `unknown` + narrowing).
+### 2. TypeScript style (follow Google TypeScript Style Guide)
+
+- Authoritative reference: https://google.github.io/styleguide/tsguide.html. Follow it for all TS code unless it conflicts with a rule below or a NestJS requirement (Nest DI/decorators win on conflict).
+- Enforceable subset from Google guide:
+  - **Imports/exports:** Use `import {X} from '...'` / `import * as ns from '...'`; `import type` for type-only imports. Named exports only — no `export default`, no `export let`, no `namespace Foo {}`, no `require()`. Minimize exported API surface.
+  - **Variables:** `const` by default, `let` if reassigned, never `var`. One variable per declaration. No use-before-declare.
+  - **Arrays/objects:** No `new Array()` / `new Object()`. No non-numeric props on arrays. Spread value must match target kind (iterables into arrays, objects into objects; never spread possibly-`null/undefined` without narrowing). Object iteration via `Object.keys/entries` + `for...of`, not unfiltered `for...in`.
+  - **Destructuring:** Prefer object destructuring for multi-value params/returns. Destructured optional array params default to `[]`, optional object params to `{}`; keep param destructuring to one level of shorthand props.
+  - **Classes:** No semicolon after class declaration; methods separated by one blank line. `readonly` for never-reassigned props; prefer parameter properties and field initializers over plumbing in constructor. No `#private` fields — use TS `private`/`protected`; never `public` modifier except on non-`readonly` constructor parameter properties. No container classes with only statics (export functions/consts instead); no direct `prototype` manipulation. Getters must be pure (no observable side effects). Constructor calls always use parens (`new Foo()`).
+  - **Functions:** Prefer `function foo()` declarations for named functions; arrow functions for callbacks/nested closures needing `this`. No function expressions (except generators or intentional `this` rebinding, which is discouraged). Arrow concise bodies only when return value is used (else block body or `void`). Never pass bare named callbacks with mismatched arity (e.g. `.map(parseInt)` — wrap: `.map((n) => parseInt(n))`). Use rest params over `arguments`; never name a variable `arguments`. No blank lines at start/end of function body.
+  - **`this`:** Only in class ctors/methods, functions with explicit `this:` type, or arrows in a valid `this` scope. Never to reach globals or bypass visibility (`obj['priv']` banned).
+  - **Strings/numbers/coercion:** Single quotes; no `\`-line-continuations (use `+` concat); template literals over complex concat. `0x`/`0o`/`0b` lowercase, no stray leading zeros. Coerce via `String()`/`Boolean()`/template/`!!`; `Number()` + explicit `NaN`/`isFinite` check (never unary `+`, `parseInt/parseFloat` except validated non-base-10 radix). No `!!`/implicit truthiness for enums — compare explicitly.
+  - **Control flow/typed code:** Braces required for `if/for/while`; `for...of` over `for...in` on arrays; `===`/`!==` only. No non-null assertion (`!`) or `as` casts to silence types without validation at the boundary.
+- Existing repo rules (take precedence on conflict):
+  - `strict` is on (full strict mode). Handle `null/undefined` explicitly. No `any` (`no-explicit-any` is error — prefer `unknown` + narrowing).
 - `forceConsistentCasingInFileNames: true` — imports must match exact file casing.
 - Prettier: default `.prettierrc`. Run `npm run format` on touched files. ESLint `sourceType: commonjs` — use `import` syntax (compiled to CJS), not `require`.
 - Avoid unsafe args: `no-unsafe-argument` is error — validate external input at boundaries before passing to typed services.
-- Every `*.ts` file must have a top-level `/** ... */` comment explaining high-level functionality. Use bullet-point style, not conversational English. See pattern in `src\redis\redis.service.spec.ts:7`.
+- Every `*.ts` file must have a top-level `/** ... */` @fileoverview JSDoc explaining high-level functionality. Use bullet-point style, not conversational English. See pattern in `src\redis\redis.service.spec.ts:7`.
+- Every function and method must have a function-level `/** ... */` JSDoc with @param and @return. Use bullet-point style, not conversational English. Document purpose, key steps/branches, and success vs. failure outcomes. See pattern in `src\redis\redis.service.ts:39` (`onModuleInit`) and `src\redis\redis.service.spec.ts:14` (`createClientFake`).
+- JSDoc type annotations are redundant in TypeScript source code. Do not declare types in @param or @return blocks, do not write @implements, @enum, @private, @override etc. on code that uses the implements, enum, private, override etc. keywords.
+- Decorators are syntax with an @ prefix, like @MyDecorator. Do not define new decorators. Only use the decorators defined by frameworks. JSDoc comments go before decorator
 
 ### 3. Testing requirements
 - Unit tests live next to source: `src/**/*.spec.ts`, run with `npm test`. Use pattern from `src/app.controller.spec.ts:6`: `Test.createTestingModule({ controllers, providers }).compile()`.
