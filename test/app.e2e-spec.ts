@@ -3,7 +3,7 @@
  *
  * - GET /: asserts the hello assertion stays green
  * - GET /health: asserts the readiness probe stays green
- * - GET /redis?key: hit 200, miss 404, missing or blank key 400
+ * - GET /redis?key: hit 200 with value and TTL, persistent null, miss 404, missing or blank key 400
  * - POST /redis: 201 without options with edge default TTL, 201 with options
  * - POST /redis: 400 on invalid options, legacy shape, extra fields, missing or blank key
  */
@@ -15,14 +15,14 @@ import type { SetOptions } from 'redis';
 import { AppModule } from './../src/app.module';
 import { createGlobalValidationPipe } from './../src/app.pipes';
 import { DEFAULT_SET_TTL_SECONDS } from './../src/redis/redis.constants';
-import { RedisService } from './../src/redis/redis.service';
+import { RedisService, type RedisEntry } from './../src/redis/redis.service';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
   let redisFake: {
     ping: () => Promise<string>;
     isReady: () => boolean;
-    get: (key: string) => Promise<string | null>;
+    getEntry: (key: string) => Promise<RedisEntry | null>;
     set: (
       key: string,
       value: string,
@@ -34,7 +34,7 @@ describe('AppController (e2e)', () => {
     redisFake = {
       ping: async () => 'PONG',
       isReady: () => true,
-      get: vi.fn<(key: string) => Promise<string | null>>(),
+      getEntry: vi.fn<(key: string) => Promise<RedisEntry | null>>(),
       set: vi.fn<
         (
           key: string,
@@ -73,17 +73,32 @@ describe('AppController (e2e)', () => {
       .expect({ status: 'ok', redis: 'up' });
   });
 
-  it('/redis?key (GET) resolves the stored value', () => {
-    vi.mocked(redisFake.get).mockResolvedValueOnce('bar');
+  it('/redis?key (GET) resolves the stored value with TTL', () => {
+    vi.mocked(redisFake.getEntry).mockResolvedValueOnce({
+      value: 'bar',
+      expiresIn: 42,
+    });
     return request(app.getHttpServer())
       .get('/redis')
       .query({ key: 'foo' })
       .expect(200)
-      .expect({ key: 'foo', value: 'bar' });
+      .expect({ key: 'foo', value: 'bar', expiresIn: 42 });
+  });
+
+  it('/redis?key (GET) resolves null expiry for persistent keys', () => {
+    vi.mocked(redisFake.getEntry).mockResolvedValueOnce({
+      value: 'bar',
+      expiresIn: null,
+    });
+    return request(app.getHttpServer())
+      .get('/redis')
+      .query({ key: 'foo' })
+      .expect(200)
+      .expect({ key: 'foo', value: 'bar', expiresIn: null });
   });
 
   it('/redis?key (GET) returns 404 on a cache miss', () => {
-    vi.mocked(redisFake.get).mockResolvedValueOnce(null);
+    vi.mocked(redisFake.getEntry).mockResolvedValueOnce(null);
     return request(app.getHttpServer())
       .get('/redis')
       .query({ key: 'missing' })

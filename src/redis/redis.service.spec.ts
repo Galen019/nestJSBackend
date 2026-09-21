@@ -11,6 +11,7 @@ import { RedisService } from './redis.service';
  * - ping: delegates to client
  * - set: delegates key/value/options, validates key, propagates errors
  * - get: delegates key, validates key, resolves value or null
+ * - getEntry: single read with TTL, maps -1/-2, validates once
  * - onModuleDestroy: quit if open, skip if closed
  */
 
@@ -18,7 +19,7 @@ import { RedisService } from './redis.service';
  * Creates a fresh mocked Redis client for DI.
  *
  * - defaults `isOpen`/`isReady` to false
- * - stubs `connect`/`quit`/`ping`/`set`/`get`/`on` with vitest mocks.
+ * - stubs `connect`/`quit`/`ping`/`set`/`get`/`ttl`/`on` with vitest mocks.
  */
 function createClientFake() {
   return {
@@ -39,6 +40,7 @@ function createClientFake() {
     get: vi
       .fn<(key: string) => Promise<string | null>>()
       .mockResolvedValue(null),
+    ttl: vi.fn<(key: string) => Promise<number>>().mockResolvedValue(60),
     on: vi.fn<() => unknown>().mockReturnValue(undefined),
   };
 }
@@ -210,6 +212,86 @@ describe('RedisService', () => {
 
       await expect(service.get('')).rejects.toThrow();
       expect(client.get).not.toHaveBeenCalled();
+      await module.close();
+    });
+  });
+
+  describe('getEntry', () => {
+    it('resolves value with TTL seconds on a hit', async () => {
+      client.get.mockResolvedValueOnce('value');
+      client.ttl.mockResolvedValueOnce(42);
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.getEntry('key')).resolves.toEqual({
+        value: 'value',
+        expiresIn: 42,
+      });
+      expect(client.get).toHaveBeenCalledWith('key');
+      expect(client.ttl).toHaveBeenCalledWith('key');
+      await module.close();
+    });
+
+    it('resolves null expiry for persistent keys', async () => {
+      client.get.mockResolvedValueOnce('value');
+      client.ttl.mockResolvedValueOnce(-1);
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.getEntry('key')).resolves.toEqual({
+        value: 'value',
+        expiresIn: null,
+      });
+      await module.close();
+    });
+
+    it('resolves null when the key expires between get and ttl', async () => {
+      client.get.mockResolvedValueOnce('value');
+      client.ttl.mockResolvedValueOnce(-2);
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.getEntry('key')).resolves.toBeNull();
+      await module.close();
+    });
+
+    it('resolves null on a miss without checking TTL', async () => {
+      client.get.mockResolvedValueOnce(null);
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.getEntry('missing')).resolves.toBeNull();
+      expect(client.ttl).not.toHaveBeenCalled();
+      await module.close();
+    });
+
+    it('rejects empty keys without calling the client', async () => {
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.getEntry('   ')).rejects.toThrow();
+      expect(client.get).not.toHaveBeenCalled();
+      expect(client.ttl).not.toHaveBeenCalled();
+      await module.close();
+    });
+
+    it('propagates get errors without checking TTL', async () => {
+      client.get.mockRejectedValueOnce(new Error('READONLY'));
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.getEntry('key')).rejects.toThrow('READONLY');
+      expect(client.ttl).not.toHaveBeenCalled();
+      await module.close();
+    });
+
+    it('propagates TTL errors', async () => {
+      client.get.mockResolvedValueOnce('value');
+      client.ttl.mockRejectedValueOnce(new Error('READONLY'));
+      const module = await compile();
+      service = module.get<RedisService>(RedisService);
+
+      await expect(service.getEntry('key')).rejects.toThrow('READONLY');
       await module.close();
     });
   });

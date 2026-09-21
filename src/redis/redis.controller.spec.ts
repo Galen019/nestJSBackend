@@ -1,7 +1,8 @@
 /**
  * Test suite for RedisController with mocked RedisService.
  *
- * - GET /redis: hit resolves key/value, miss throws 404, errors propagate
+ * - GET /redis: hit resolves key/value/expiresIn, miss throws 404, errors propagate
+ * - persistent hits resolve null expiry
  * - blank-key 400s are owned by GetRedisDto + global pipe, covered by e2e
  * - POST /redis: applies edge default TTL, maps expiration and condition
  * - conflicts are unrepresentable in the DTO so no conflict branches exist
@@ -13,17 +14,19 @@ import { NotFoundException } from '@nestjs/common';
 import type { SetOptions } from 'redis';
 import { RedisController } from './redis.controller';
 import { DEFAULT_SET_TTL_SECONDS } from './redis.constants';
-import { RedisService } from './redis.service';
+import { RedisService, type RedisEntry } from './redis.service';
 
 /**
  * Creates a fresh mocked RedisService for controller DI.
  *
- * - stubs `get` to resolve null by default (cache miss)
+ * - stubs `getEntry` to resolve null by default (cache miss)
  * - stubs `set` to resolve 'OK' by default.
  */
 function createServiceFake() {
   return {
-    get: vi.fn<(key: string) => Promise<string | null>>().mockResolvedValue(null),
+    getEntry: vi
+      .fn<(key: string) => Promise<RedisEntry | null>>()
+      .mockResolvedValue(null),
     set: vi
       .fn<
         (
@@ -67,14 +70,25 @@ describe('RedisController', () => {
   });
 
   describe('getValue', () => {
-    it('resolves key and value on a cache hit', async () => {
-      service.get.mockResolvedValueOnce('value');
+    it('resolves key, value, and TTL seconds on a cache hit', async () => {
+      service.getEntry.mockResolvedValueOnce({ value: 'value', expiresIn: 42 });
 
       await expect(controller.getValue({ key: 'key' })).resolves.toEqual({
         key: 'key',
         value: 'value',
+        expiresIn: 42,
       });
-      expect(service.get).toHaveBeenCalledWith('key');
+      expect(service.getEntry).toHaveBeenCalledWith('key');
+    });
+
+    it('resolves null expiry for persistent keys', async () => {
+      service.getEntry.mockResolvedValueOnce({ value: 'value', expiresIn: null });
+
+      await expect(controller.getValue({ key: 'key' })).resolves.toEqual({
+        key: 'key',
+        value: 'value',
+        expiresIn: null,
+      });
     });
 
     it('throws 404 on a cache miss', async () => {
@@ -84,7 +98,7 @@ describe('RedisController', () => {
     });
 
     it('propagates service errors', async () => {
-      service.get.mockRejectedValueOnce(new Error('READONLY'));
+      service.getEntry.mockRejectedValueOnce(new Error('READONLY'));
 
       await expect(controller.getValue({ key: 'key' })).rejects.toThrow(
         'READONLY',

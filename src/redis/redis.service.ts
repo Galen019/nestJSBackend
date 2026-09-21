@@ -16,6 +16,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export interface RedisEntry {
+  value: string;
+  expiresIn: number | null;
+}
+
 /**
  * Lifecycle wrapper around the injected `REDIS_CLIENT`.
  *
@@ -112,6 +117,34 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async get(key: string): Promise<string | null> {
     this.assertValidKey(key);
     return this.client.get(key);
+  }
+
+  /**
+   * Reads a value with its TTL by key in one logical read.
+   *
+   * - validates the key once before calling Redis
+   * - resolves null on a cache miss without checking TTL
+   * - maps TTL -2 (expired between calls) to null as a miss
+   * - maps TTL -1 (persistent) to null expiry, otherwise remaining seconds
+   * - rejects with the client error when Redis fails.
+   *
+   * @param key Redis key to read.
+   * @return The stored value with expiry, or null when the key does not exist.
+   */
+  async getEntry(key: string): Promise<RedisEntry | null> {
+    this.assertValidKey(key);
+    const value = await this.client.get(key);
+    if (value === null) {
+      return null;
+    }
+    const ttl = await this.client.ttl(key);
+    if (ttl === -2) {
+      return null;
+    }
+    if (ttl === -1) {
+      return { value, expiresIn: null };
+    }
+    return { value, expiresIn: ttl };
   }
 
   /**

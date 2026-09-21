@@ -1,7 +1,7 @@
 /**
  * HTTP interface for Redis get/set operations.
  *
- * - GET /redis?key=<key> reads via RedisService.get, 404 on miss
+ * - GET /redis?key=<key> reads via RedisService.getEntry, 404 on miss
  * - POST /redis writes via RedisService.set, options validated as an object
  * - Thin layer: routing, option mapping, status codes only, no storage logic
  */
@@ -22,6 +22,7 @@ import { RedisService } from './redis.service';
 export interface GetRedisResponse {
   key: string;
   value: string;
+  expiresIn: number | null;
 }
 
 export interface SetRedisResponse {
@@ -35,29 +36,30 @@ export interface SetRedisResponse {
  *
  * - delegates storage to RedisService
  * - validates input via DTOs and the global pipe
- * - maps misses to 404 and applies the edge default TTL.
+ * - maps misses to 404 and applies the edge default TTL
+ * - exposes the key TTL in seconds, null when persistent, on GET hits.
  */
 @Controller('redis')
 export class RedisController {
   constructor(private readonly redisService: RedisService) {}
 
   /**
-   * Reads a value by query key.
+   * Reads a value by query key with its TTL.
    *
    * - relies on the global pipe to reject missing or blank keys with 400
-   * - returns 404 when Redis resolves null
-   * - otherwise resolves with key and stored value.
+   * - returns 404 when Redis resolves null, including expiry races
+   * - otherwise resolves with key, stored value, and TTL seconds or null.
    *
    * @param query Validated query holding the key to read.
-   * @return The key with its stored value.
+   * @return The key with its stored value and TTL seconds or null.
    */
   @Get()
   async getValue(@Query() query: GetRedisDto): Promise<GetRedisResponse> {
-    const value = await this.redisService.get(query.key);
-    if (value === null) {
+    const entry = await this.redisService.getEntry(query.key);
+    if (entry === null) {
       throw new NotFoundException(`Key "${query.key}" not found`);
     }
-    return { key: query.key, value };
+    return { key: query.key, value: entry.value, expiresIn: entry.expiresIn };
   }
 
   /**
