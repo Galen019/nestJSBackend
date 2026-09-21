@@ -17,19 +17,19 @@ Stack:
 
 Source layout:
 ```
-src/
-  main.ts               # bootstrap: NestFactory.create(AppModule), listen PORT ?? 3000
-  app.module.ts         # root module, wires controllers/providers
-  app.controller.ts     # HTTP layer, thin, delegates to service
-  app.service.ts        # business logic (@Injectable)
-  app.controller.spec.ts# unit test (vitest)
-  health/health.controller.ts # GET /health, pings Redis via RedisService
-  redis/redis.module.ts       # provides REDIS_CLIENT + RedisService
-  redis/redis.service.ts      # connect/retry/quit/ping wrapper
-  redis/redis.constants.ts    # REDIS_CLIENT token + REDIS_* env parsing
-test/
-  app.e2e-spec.ts       # e2e test via supertest
-dist/                   # build output (generated, don't edit)
+src/main.ts                    # bootstrap (global ValidationPipe, PORT)
+src/app.module.ts              # root module (imports RedisModule; App + Health controllers)
+src/app.controller.ts[.spec]   # GET / -> AppService.getHello()
+src/app.service.ts             # Hello World provider
+src/app.pipes.ts               # createGlobalValidationPipe factory
+src/health/health.controller.ts[.spec]  # GET /health readiness probe via RedisService
+src/redis/redis.module.ts      # REDIS_CLIENT factory + RedisService wiring
+src/redis/redis.constants.ts   # REDIS_CLIENT token + getRedisConfig()
+src/redis/redis.controller.ts[.spec]    # GET/POST /redis (thin HTTP adapter)
+src/redis/redis.service.ts[.spec]       # Redis client lifecycle + get/set/ping
+src/redis/dto/redis.dto.ts     # SetRedisDto / GetRedisDto / SetOptionsDto / ExpirationDto
+test/app.e2e-spec.ts           # e2e specs via supertest
+dist/                          # build output (generated, don't edit)
 ```
 
 Entry flow: `src/main.ts:4 bootstrap()` → `AppModule` (+ `RedisModule`) → `AppController (@Controller())` → `AppService.getHello()`; `HealthController (@Controller('health'))` → `RedisService.ping()`.
@@ -104,7 +104,6 @@ No test script uses Jest. Do not add Jest. Do not run `nest start` directly — 
 - Read `src/app.module.ts`, `package.json`, and relevant spec before editing.
 - Smallest diff: don't reformat untouched files, don't upgrade Nest 12 / Node 22 / Vitest 5 unless asked.
 - Don't edit `dist/`, `coverage/`, `node_modules/`, `*.tsbuildinfo`.
-- Do not run `npm test`, `npm run test:e2e`, or `npm run lint` unless specifically directed to by the user.
 - Do not run `npm run build` for comments only changes
 - After code changes, verify with `npm run build` only (unless the user explicitly requests lint/tests). Fix type errors before claiming done.
 - Docker changes: keep non-root `USER node`, `npm ci --omit=dev`, `EXPOSE 3000`, `CMD ["node", "dist/main"]`.
