@@ -140,16 +140,14 @@ describe('RedisService', () => {
   });
 
   describe('set', () => {
-    it('delegates key and value and resolves OK', async () => {
+    it('delegates key and value verbatim without options', async () => {
       const module = await compile();
       service = module.get<RedisService>(RedisService);
 
       await expect(service.set('key', 'value')).resolves.toBe('OK');
 
-      // applies default 1-hour TTL when no expiration is specified
-      expect(client.set).toHaveBeenCalledWith('key', 'value', {
-        expiration: { type: 'EX', value: 3600 },
-      });
+      // verbatim passthrough, edge default TTL lives in the controller
+      expect(client.set).toHaveBeenCalledWith('key', 'value', undefined);
 
       await module.close();
     });

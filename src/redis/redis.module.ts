@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { createClient, type RedisClientType } from 'redis';
 import { REDIS_CLIENT, getRedisConfig } from './redis.constants';
+import { RedisController } from './redis.controller';
 import { RedisService } from './redis.service';
 
 /**
@@ -11,6 +12,7 @@ import { RedisService } from './redis.service';
  * - Socket: host/port, capped reconnect, password, no offline queue
  */
 @Module({
+  controllers: [RedisController],
   providers: [
     {
       provide: REDIS_CLIENT,

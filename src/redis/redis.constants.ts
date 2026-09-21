@@ -6,6 +6,11 @@
  */
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
+/**
+ * Default TTL applied at the HTTP edge when POST /redis omits expiration.
+ */
+export const DEFAULT_SET_TTL_SECONDS = 3600;
+
 export interface RedisConfig {
   host: string;
   port: number;

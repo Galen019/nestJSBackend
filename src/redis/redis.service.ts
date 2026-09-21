@@ -11,7 +11,6 @@ import { REDIS_CLIENT } from './redis.constants';
 const MAX_CONNECT_ATTEMPTS = 10;
 const INITIAL_RETRY_DELAY_MS = 500;
 const MAX_RETRY_DELAY_MS = 5000;
-const DEFAULT_SET_TTL_SECONDS = 3600;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -78,11 +77,10 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Creates a key:value entry in Redis, forwarding full set options.
+   * Creates a key:value entry in Redis, forwarding set options verbatim.
    *
    * - validates the key is a non-empty string before calling Redis
-   * - applies a default 1-hour EX expiration when `options.expiration` is absent
-   * - delegates to `client.set`, passing `options` through verbatim when given
+   * - passes `options` through untouched, including undefined
    * - resolves with 'OK' (or prior value when `GET` is set, null when NX/XX skips)
    * - rejects with the client error when Redis fails.
    *
@@ -97,12 +95,6 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     options?: SetOptions,
   ): Promise<string | null> {
     this.assertValidKey(key);
-    if (options?.expiration === undefined) {
-      return this.client.set(key, value, {
-        ...options,
-        expiration: { type: 'EX', value: DEFAULT_SET_TTL_SECONDS },
-      });
-    }
     return this.client.set(key, value, options);
   }
 
@@ -125,6 +117,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   /**
    * Rejects empty or whitespace-only keys before Redis is called.
    *
+   * - internal invariant guard, request shape is owned by DTOs + global pipe
    * - throws when `key` is not a non-empty string
    * - otherwise returns without effect.
    *
