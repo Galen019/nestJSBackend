@@ -6,7 +6,9 @@
  * - send: routes JSON through the right socket, false for unknown/closed clients
  * - close: the registration close listener removes the session
  * - duplicate: new socket closed with 1008, existing session kept
+ * - message: inbound payload is forwarded to the debug log without side effects
  */
+import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
@@ -65,6 +67,29 @@ function fireClose(fake: ReturnType<typeof createSocketFake>): void {
 }
 
 /**
+ * Fires the captured `message` listener of a fake socket.
+ *
+ * - simulates the driver emitting `message` with the given payload
+ * - fails fast when registration attached no message listener.
+ *
+ * @param fake Fake created by `createSocketFake`.
+ * @param payload Payload to pass to the message listener.
+ * @return Nothing, the listener is invoked synchronously.
+ */
+function fireMessage(
+  fake: ReturnType<typeof createSocketFake>,
+  payload: unknown,
+): void {
+  const messageCall = fake.mocks.on.mock.calls.find(
+    (call) => call[0] === 'message',
+  );
+  if (messageCall === undefined) {
+    throw new Error('Expected a message listener');
+  }
+  messageCall[1](payload);
+}
+
+/**
  * Parses a test `clientId`, failing fast on bad literals.
  *
  * - test-setup helper, literals in this file are always valid
@@ -105,6 +130,7 @@ describe('WsService', () => {
   afterEach(async () => {
     await module?.close();
     module = undefined;
+    vi.restoreAllMocks();
   });
 
   it('adds a session when a client connects', () => {
@@ -342,5 +368,64 @@ describe('WsService', () => {
       'missing userId/clientId',
     );
     expect(service.getSessionCount()).toBe(0);
+  });
+
+  it('logs the string payload when a message is received', () => {
+    const fake = createSocketFake();
+    service.handleConnection({
+      socket: fake.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+    const debugSpy = vi
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => undefined);
+
+    fireMessage(fake, 'hello-payload');
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining('hello-payload'),
+      'client-456',
+    );
+  });
+
+  it('logs a Buffer payload decoded as utf8 text', () => {
+    const fake = createSocketFake();
+    service.handleConnection({
+      socket: fake.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+    const debugSpy = vi
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => undefined);
+
+    fireMessage(fake, Buffer.from('buffer-payload', 'utf8'));
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining('buffer-payload'),
+      'client-456',
+    );
+  });
+
+  it('truncates oversized payloads in the log', () => {
+    const fake = createSocketFake();
+    service.handleConnection({
+      socket: fake.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+    const debugSpy = vi
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => undefined);
+
+    fireMessage(fake, 'x'.repeat(2000));
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining('truncated 2000 chars'),
+      'client-456',
+    );
+    const logged = debugSpy.mock.calls[0]?.[0];
+    expect(typeof logged === 'string' ? logged.length : 0).toBeLessThan(2000);
   });
 });
