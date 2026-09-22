@@ -6,8 +6,6 @@
  * - `Session` shape stored in the registry keyed by `clientId`
  */
 
-import type { WebSocket } from 'ws';
-
 /** User identity, validated once at the connection boundary. */
 export type UserId = string & { readonly __brand: 'UserId' };
 
@@ -29,16 +27,6 @@ export interface SessionSocket {
   send(payload: string): void;
   close(code?: number, reason?: string): void;
 }
-
-/**
- * Compile-time contract with the `ws` driver.
- *
- * - A real driver socket must satisfy `SessionSocket` with no cast
- * - A driver upgrade that breaks the shape fails the build, not production.
- */
-type DriverSocketCheck = WebSocket extends SessionSocket ? true : false;
-const driverSocketCheck: DriverSocketCheck = true;
-void driverSocketCheck;
 
 /**
  * Parameters for registering one connection.

@@ -20,9 +20,8 @@ import { WsService } from './ws.service';
  * @return Stub socket.
  */
 function createSocketStub(): SessionSocket {
-  const initialState: number = WebSocket.OPEN;
   return {
-    readyState: initialState,
+    readyState: WebSocket.OPEN,
     on: (): void => undefined,
     send: (): void => undefined,
     close: (): void => undefined,

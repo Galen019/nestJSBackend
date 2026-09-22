@@ -77,13 +77,14 @@ export class WsGateway implements OnGatewayConnection {
    * @return True when the value has a usable URL field.
    */
   private hasUpgradeUrl(value: unknown): value is { url?: string } {
-    if (typeof value !== 'object' || value === null) {
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('url' in value)
+    ) {
       return false;
     }
-    if (!('url' in value)) {
-      return false;
-    }
-    const url: unknown = value.url;
+    const url = value.url;
     return url === undefined || typeof url === 'string';
   }
 }
