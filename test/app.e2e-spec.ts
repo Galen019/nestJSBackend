@@ -1,6 +1,7 @@
 /**
  * E2E suite for HTTP routes with mocked RedisService.
  *
+ * - registers WsAdapter so the `/ws` gateway boots alongside HTTP routes
  * - GET /: asserts the hello assertion stays green
  * - GET /health: asserts the readiness probe stays green
  * - GET /redis?key: hit 200 with value and TTL, persistent null, miss 404, missing or blank key 400
@@ -9,6 +10,7 @@
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
+import { WsAdapter } from '@nestjs/platform-ws';
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import request from 'supertest';
 import type { SetOptions } from 'redis';
@@ -52,6 +54,7 @@ describe('AppController (e2e)', () => {
 
     app = moduleFixture.createNestApplication();
     app.useGlobalPipes(createGlobalValidationPipe());
+    app.useWebSocketAdapter(new WsAdapter(app));
     await app.init();
   });
 
