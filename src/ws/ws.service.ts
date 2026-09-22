@@ -16,6 +16,9 @@ import type {
 /** Close code for policy violations (missing params, duplicate clientId). */
 export const WS_CLOSE_POLICY_VIOLATION = 1008;
 
+/** Maximum characters of an inbound payload written to the log. */
+const MAX_LOGGED_PAYLOAD_CHARS = 500;
+
 /**
  * Outcome of attempting to register a new session.
  *
@@ -74,8 +77,8 @@ export class WsService {
       heartbeatAt: Date.now(),
     };
     this.sessions.set(clientId, session);
-    socket.on('message', () => {
-      this.handleMessage(clientId);
+    socket.on('message', (data: unknown) => {
+      this.handleMessage(clientId, data);
     });
     socket.on('error', (err: unknown) => {
       this.handleError(clientId, err);
@@ -150,12 +153,20 @@ export class WsService {
   /**
    * Observes an inbound message from a registered client.
    *
-   * - lifecycle hook kept minimal by design, receipt is logged at debug level.
+   * - lifecycle hook kept minimal by design, receipt is logged at debug level
+   * - payload preview is truncated so one frame cannot flood the logs.
    *
    * @param clientId Owner of the socket that sent the message.
+   * @param data Raw message payload from the socket.
+   * @return Nothing, the payload is only logged.
    */
-  private handleMessage(clientId: ClientId): void {
-    this.logger.debug('Message received', clientId);
+  private handleMessage(clientId: ClientId, data: unknown): void {
+    const raw = String(data);
+    const preview =
+      raw.length > MAX_LOGGED_PAYLOAD_CHARS
+        ? `${raw.slice(0, MAX_LOGGED_PAYLOAD_CHARS)}… (truncated ${raw.length} chars)`
+        : raw;
+    this.logger.debug(`Message received: ${preview}`, clientId);
   }
 
   /**

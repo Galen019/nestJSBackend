@@ -6,8 +6,9 @@
  * - disconnect: session removed from the map
  * - duplicate: new socket closed, existing session kept
  * - missing params: socket closed with 1008, nothing registered
+ * - message: inbound client payload is written to the debug log
  */
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, Logger } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
@@ -70,6 +71,7 @@ describe('WsGateway (e2e)', () => {
         // ignore teardown errors for already-closed sockets
       }
     }
+    vi.restoreAllMocks();
     await app?.close();
   });
 
@@ -226,5 +228,25 @@ describe('WsGateway (e2e)', () => {
     await expect(closeCode).resolves.toBe(1008);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(wsService.getSessionCount()).toBe(0);
+  });
+
+  it('logs the inbound message payload from the client', async () => {
+    const client = await connectClient();
+    await waitForSessionCount(1);
+    const debugSpy = vi
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => undefined);
+
+    client.send('hello-e2e-payload');
+
+    await vi.waitFor(
+      () => {
+        expect(debugSpy).toHaveBeenCalledWith(
+          expect.stringContaining('hello-e2e-payload'),
+          'client-456',
+        );
+      },
+      { timeout: 3000 },
+    );
   });
 });
