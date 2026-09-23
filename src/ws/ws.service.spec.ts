@@ -30,12 +30,13 @@ import { WS_CLOSE_POLICY_VIOLATION, WsService } from './ws.service';
  * @return Fake socket plus its mocks.
  */
 function createSocketFake() {
-  const on = vi.fn<
-    (
-      event: 'message' | 'error' | 'close',
-      listener: (data: unknown) => void,
-    ) => void
-  >();
+  const on =
+    vi.fn<
+      (
+        event: 'message' | 'error' | 'close',
+        listener: (data: unknown) => void,
+      ) => void
+    >();
   const send = vi.fn<(payload: string) => void>();
   const close = vi.fn<(code?: number, reason?: string) => void>();
   const initialState: number = WebSocket.OPEN;
@@ -297,9 +298,9 @@ describe('WsService', () => {
     fireClose(first);
 
     expect(service.getSessionCount()).toBe(1);
-    expect(
-      service.getSession(requireClientId('client-2'))?.socket,
-    ).toBe(second.socket);
+    expect(service.getSession(requireClientId('client-2'))?.socket).toBe(
+      second.socket,
+    );
   });
 
   it('closes the new socket and keeps the old session on duplicate clientId', () => {
@@ -427,5 +428,58 @@ describe('WsService', () => {
     );
     const logged = debugSpy.mock.calls[0]?.[0];
     expect(typeof logged === 'string' ? logged.length : 0).toBeLessThan(2000);
+  });
+
+  it('fans out to many clients and counts sent vs skipped', () => {
+    const first = createSocketFake();
+    const second = createSocketFake();
+    service.handleConnection({
+      socket: first.socket,
+      userId: parseUserId('user-1'),
+      clientId: parseClientId('client-1'),
+    });
+    service.handleConnection({
+      socket: second.socket,
+      userId: parseUserId('user-2'),
+      clientId: parseClientId('client-2'),
+    });
+
+    const result = service.sendToClients(
+      [
+        requireClientId('client-1'),
+        requireClientId('client-2'),
+        requireClientId('ghost'),
+      ],
+      { type: 'MESSAGE', data: 'hi' },
+    );
+
+    expect(result).toEqual({ sent: 2, skipped: 1 });
+    expect(first.mocks.send).toHaveBeenCalledTimes(1);
+    expect(second.mocks.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips closed sockets when fanning out', () => {
+    const openClient = createSocketFake();
+    const closedFake = createSocketFake();
+    closedFake.socket.readyState = WebSocket.CLOSED;
+    service.handleConnection({
+      socket: openClient.socket,
+      userId: parseUserId('user-1'),
+      clientId: parseClientId('client-1'),
+    });
+    service.handleConnection({
+      socket: closedFake.socket,
+      userId: parseUserId('user-2'),
+      clientId: parseClientId('client-2'),
+    });
+
+    const result = service.sendToClients(
+      [requireClientId('client-1'), requireClientId('client-2')],
+      { type: 'PING' },
+    );
+
+    expect(result).toEqual({ sent: 1, skipped: 1 });
+    expect(openClient.mocks.send).toHaveBeenCalledTimes(1);
+    expect(closedFake.mocks.send).not.toHaveBeenCalled();
   });
 });

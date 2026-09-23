@@ -7,11 +7,7 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { WebSocket } from 'ws';
-import type {
-  ClientId,
-  ConnectionParams,
-  Session,
-} from './session.interface';
+import type { ClientId, ConnectionParams, Session } from './session.interface';
 
 /** Close code for policy violations (missing params, duplicate clientId). */
 export const WS_CLOSE_POLICY_VIOLATION = 1008;
@@ -27,9 +23,7 @@ const MAX_LOGGED_PAYLOAD_CHARS = 500;
  * - `rejected` closes the socket without registering anything.
  */
 export type RegisterSessionResult =
-  | { kind: 'registered' }
-  | { kind: 'duplicate' }
-  | { kind: 'rejected' };
+  { kind: 'registered' } | { kind: 'duplicate' } | { kind: 'rejected' };
 
 /**
  * Registry mapping `ClientId` to its live WebSocket session.
@@ -115,6 +109,63 @@ export class WsService {
   }
 
   /**
+   * Serializes a payload to JSON once for the send path.
+   *
+   * - returns the JSON string when `message` serializes cleanly
+   * - returns undefined when `stringify` throws or yields no string
+   * - logs a per-client warning when `clientId` is given, else a broadcast warning.
+   *
+   * @param message Payload to serialize to JSON.
+   * @param clientId Optional recipient for targeted log context.
+   * @return The JSON string, or undefined when unserializable.
+   */
+  private serializeMessage(message: unknown, clientId?: ClientId): string | undefined {
+    let payload: unknown;
+    try {
+      payload = JSON.stringify(message);
+    } catch {
+      payload = undefined;
+    }
+    if (typeof payload !== 'string') {
+      if (clientId === undefined) {
+        this.logger.warn('Dropping unserializable broadcast message');
+      } else {
+        this.logger.warn('Dropping unserializable message', clientId);
+      }
+      return undefined;
+    }
+    return payload;
+  }
+
+  /**
+   * Sends an already-serialized payload to one client.
+   *
+   * - returns false when no session exists for `clientId`
+   * - returns false when the socket is not currently open
+   * - otherwise sends via `session.socket.send(...)` and returns true.
+   *
+   * @param clientId Unique session key of the recipient.
+   * @param payload JSON string to send without re-serializing.
+   * @return True when the message was sent.
+   */
+  private sendSerialized(clientId: ClientId, payload: string): boolean {
+    const session = this.sessions.get(clientId);
+    if (session === undefined) {
+      return false;
+    }
+    if (session.socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    try {
+      session.socket.send(payload);
+      return true;
+    } catch {
+      this.logger.warn('Failed to send message', clientId);
+      return false;
+    }
+  }
+
+  /**
    * Sends a JSON message to one client.
    *
    * - returns false when no session exists for `clientId`
@@ -127,27 +178,42 @@ export class WsService {
    * @return True when the message was sent.
    */
   sendToClient(clientId: ClientId, message: unknown): boolean {
-    const session = this.sessions.get(clientId);
-    if (session === undefined) {
+    const payload = this.serializeMessage(message, clientId);
+    if (payload === undefined) {
       return false;
     }
-    if (session.socket.readyState !== WebSocket.OPEN) {
-      return false;
+    return this.sendSerialized(clientId, payload);
+  }
+
+  /**
+   * Sends a JSON message to many clients, best-effort.
+   *
+   * - serializes `message` once, then fans out the shared payload
+   * - never throws, missing/closed/unserializable entries are skipped
+   * - returns counts so callers can log without per-id receipts.
+   *
+   * @param clientIds Recipient session keys to fan out to.
+   * @param message Payload to serialize to JSON once and send.
+   * @return Sent and skipped counts for observability only.
+   */
+  sendToClients(
+    clientIds: ClientId[],
+    message: unknown,
+  ): { sent: number; skipped: number } {
+    const payload = this.serializeMessage(message);
+    if (payload === undefined) {
+      return { sent: 0, skipped: clientIds.length };
     }
-    let payload: string;
-    try {
-      payload = JSON.stringify(message);
-    } catch {
-      this.logger.warn('Dropping unserializable message', clientId);
-      return false;
+    let sent = 0;
+    let skipped = 0;
+    for (const clientId of clientIds) {
+      if (this.sendSerialized(clientId, payload)) {
+        sent += 1;
+      } else {
+        skipped += 1;
+      }
     }
-    try {
-      session.socket.send(payload);
-      return true;
-    } catch {
-      this.logger.warn('Failed to send message', clientId);
-      return false;
-    }
+    return { sent, skipped };
   }
 
   /**

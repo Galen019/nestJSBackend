@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package push;
+
+// Long-lived fan-out from an internal producer to WebSocket sessions.
+// - Client-streaming: caller opens one stream and writes many PublishRequest.
+// - Fire-and-forget per message; single PublishSummary on stream close.
+service PushService {
+  rpc Publish(stream PublishRequest) returns (PublishSummary);
+}
+
+// One fan-out chunk: opaque message to a batch of client sessions.
+message PublishRequest {
+  repeated string client_ids = 1;
+  string message = 2;
+}
+
+// Stream-close accounting only, not per-id delivery receipts.
+message PublishSummary {
+  uint32 received = 1;
+}
