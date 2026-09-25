@@ -9,8 +9,10 @@
 import { Controller } from '@nestjs/common';
 import { GrpcStreamMethod, RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
+import type { Metadata } from '@grpc/grpc-js';
 import { finalize, map, reduce, tap, throwError, timeout } from 'rxjs';
 import type { Observable } from 'rxjs';
+import { JwtVerifierService } from '../auth/jwt-verifier.service';
 import {
   MAX_CONCURRENT_STREAMS,
   MAX_STREAM_DURATION_MS,
@@ -40,23 +42,40 @@ export interface PublishSummary {
  */
 @Controller()
 export class PushController {
-  constructor(private readonly pushService: PushService) {}
+  constructor(
+    private readonly pushService: PushService,
+    private readonly verifier: JwtVerifierService,
+  ) {}
 
   /**
    * Consumes the request stream and emits the close summary.
    *
+   * - verifies `authorization: Bearer <jwt>` metadata first (UNAUTHENTICATED on failure)
    * - rejects with RESOURCE_EXHAUSTED when no stream slot is free
    * - each chunk passes through `StreamBudget.consume`, then fans out
    * - counts chunks with `reduce`, maps the count to `{ received }`
    * - releases the stream slot on completion, error, or cancellation.
    *
    * @param messages Observable of stream chunks from the gRPC caller.
+   * @param metadata gRPC call metadata carrying the Bearer token.
    * @return Observable emitting one summary on stream completion.
    */
   @GrpcStreamMethod(PUSH_SERVICE, PUBLISH_METHOD)
   publish(
     messages: Observable<PublishRequestGrpc>,
+    metadata?: Metadata,
   ): Observable<PublishSummary> {
+    try {
+      this.verifier.verifyHeader(readGrpcAuthHeader(metadata));
+    } catch {
+      return throwError(
+        () =>
+          new RpcException({
+            code: status.UNAUTHENTICATED,
+            message: 'Invalid or expired token',
+          }),
+      );
+    }
     const release = this.pushService.beginStream();
     if (release === undefined) {
       return throwError(
@@ -81,4 +100,21 @@ export class PushController {
       finalize(release),
     );
   }
+}
+
+/**
+ * Reads the `authorization` header from gRPC call metadata.
+ *
+ * - grpc-js lowercase-normalizes metadata keys, so one lookup suffices
+ * - returns the raw header value so the verifier enforces the Bearer scheme
+ * - returns undefined when metadata or the entry is absent.
+ *
+ * @param metadata gRPC call metadata from the stream handler.
+ * @return The raw authorization header, or undefined when absent.
+ */
+function readGrpcAuthHeader(
+  metadata: Metadata | undefined,
+): string | undefined {
+  const raw = metadata?.getMap()?.['authorization'];
+  return typeof raw === 'string' ? raw : undefined;
 }

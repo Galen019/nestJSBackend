@@ -1,8 +1,5 @@
-import {
-  Controller,
-  Get,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import { Public } from '../auth/public.decorator';
 import { RedisService } from '../redis/redis.service';
 
 interface HealthResponse {
@@ -22,6 +19,7 @@ export class HealthController {
   constructor(private readonly redisService: RedisService) {}
 
   @Get()
+  @Public()
   async check(): Promise<HealthResponse> {
     try {
       await this.redisService.ping();
