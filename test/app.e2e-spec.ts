@@ -1,23 +1,31 @@
 /**
- * E2E suite for HTTP routes with mocked RedisService.
+ * E2E suite for HTTP routes with mocked RedisService and JWT auth.
  *
  * - registers WsAdapter so the `/ws` gateway boots alongside HTTP routes
- * - GET /: asserts the hello assertion stays green
- * - GET /health: asserts the readiness probe stays green
+ * - JWT: test code signs RS256 tokens, API verifies iss/aud/exp via global guard
+ * - GET /health stays @Public(); GET / and /redis require a valid Bearer token
  * - GET /redis?key: hit 200 with value and TTL, persistent null, miss 404, missing or blank key 400
  * - POST /redis: 201 without options with edge default TTL, 201 with options
  * - POST /redis: 400 on invalid options, legacy shape, extra fields, missing or blank key
+ * - auth negatives: missing/invalid/expired/wrong-iss/wrong-aud/HS256/tampered all 401.
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
+import { join } from 'node:path';
 import request from 'supertest';
 import type { SetOptions } from 'redis';
 import { AppModule } from './../src/app.module';
 import { createGlobalValidationPipe } from './../src/app.pipes';
 import { DEFAULT_SET_TTL_SECONDS } from './../src/redis/redis.constants';
 import { RedisService, type RedisEntry } from './../src/redis/redis.service';
+import {
+  TEST_JWT_AUDIENCE,
+  TEST_JWT_ISSUER,
+  bearerHeader,
+  signTestToken,
+} from './auth-test.helper';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -33,6 +41,14 @@ describe('AppController (e2e)', () => {
   };
 
   beforeEach(async () => {
+    process.env.JWT_PUBLIC_KEY_PATH = join(
+      process.cwd(),
+      'test',
+      'fixtures',
+      'test-public.pem',
+    );
+    process.env.JWT_ISSUER = TEST_JWT_ISSUER;
+    process.env.JWT_AUDIENCE = TEST_JWT_AUDIENCE;
     redisFake = {
       ping: async () => 'PONG',
       isReady: () => true,
@@ -62,14 +78,28 @@ describe('AppController (e2e)', () => {
     await app?.close();
   });
 
-  it('/ (GET)', () => {
+  /**
+   * Signs a valid test token for the happy path.
+   *
+   * @return The `Bearer <jwt>` header value.
+   */
+  function authHeader(): string {
+    return bearerHeader(signTestToken());
+  }
+
+  it('/ (GET) requires auth and returns hello with a token', () => {
     return request(app.getHttpServer())
       .get('/')
+      .set('Authorization', authHeader())
       .expect(200)
       .expect('Hello World!');
   });
 
-  it('/health (GET)', () => {
+  it('/ (GET) returns 401 without a token', () => {
+    return request(app.getHttpServer()).get('/').expect(401);
+  });
+
+  it('/health (GET) stays public without a token', () => {
     return request(app.getHttpServer())
       .get('/health')
       .expect(200)
@@ -83,6 +113,7 @@ describe('AppController (e2e)', () => {
     });
     return request(app.getHttpServer())
       .get('/redis')
+      .set('Authorization', authHeader())
       .query({ key: 'foo' })
       .expect(200)
       .expect({ key: 'foo', value: 'bar', expiresIn: 42 });
@@ -95,6 +126,7 @@ describe('AppController (e2e)', () => {
     });
     return request(app.getHttpServer())
       .get('/redis')
+      .set('Authorization', authHeader())
       .query({ key: 'foo' })
       .expect(200)
       .expect({ key: 'foo', value: 'bar', expiresIn: null });
@@ -104,17 +136,70 @@ describe('AppController (e2e)', () => {
     vi.mocked(redisFake.getEntry).mockResolvedValueOnce(null);
     return request(app.getHttpServer())
       .get('/redis')
+      .set('Authorization', authHeader())
       .query({ key: 'missing' })
       .expect(404);
   });
 
+  it('/redis (GET) returns 401 without a token', () => {
+    return request(app.getHttpServer())
+      .get('/redis')
+      .query({ key: 'foo' })
+      .expect(401);
+  });
+
+  it('/redis (GET) returns 401 for a non-Bearer scheme', () => {
+    return request(app.getHttpServer())
+      .get('/redis')
+      .set('Authorization', `Token ${signTestToken()}`)
+      .query({ key: 'foo' })
+      .expect(401);
+  });
+
+  it('/redis (GET) returns 401 for an expired token', () => {
+    const expired = bearerHeader(signTestToken({ expiresIn: '-10s' }));
+    return request(app.getHttpServer())
+      .get('/redis')
+      .set('Authorization', expired)
+      .query({ key: 'foo' })
+      .expect(401);
+  });
+
+  it('/redis (GET) returns 401 for wrong issuer and audience', async () => {
+    const badIss = bearerHeader(signTestToken({ issuer: 'evil-issuer' }));
+    await request(app.getHttpServer())
+      .get('/redis')
+      .set('Authorization', badIss)
+      .query({ key: 'foo' })
+      .expect(401);
+    const badAud = bearerHeader(signTestToken({ audience: 'evil-audience' }));
+    await request(app.getHttpServer())
+      .get('/redis')
+      .set('Authorization', badAud)
+      .query({ key: 'foo' })
+      .expect(401);
+  });
+
+  it('/redis (GET) returns 401 for HS256 alg-confusion tokens', () => {
+    const hs = bearerHeader(signTestToken({ algorithm: 'HS256' }));
+    return request(app.getHttpServer())
+      .get('/redis')
+      .set('Authorization', hs)
+      .query({ key: 'foo' })
+      .expect(401);
+  });
+
   it('/redis (GET) returns 400 without a key', () => {
-    return request(app.getHttpServer()).get('/redis').expect(400);
+    return request(app.getHttpServer())
+      .get('/redis')
+      .set('Authorization', authHeader())
+      .expect(400);
   });
 
   it('/redis (GET) returns 400 for a blank key', () => {
     return request(app.getHttpServer())
       .get('/redis')
+      .set('Authorization', authHeader())
       .query({ key: '   ' })
       .expect(400);
   });
@@ -123,6 +208,7 @@ describe('AppController (e2e)', () => {
     vi.mocked(redisFake.set).mockResolvedValueOnce('OK');
     await request(app.getHttpServer())
       .post('/redis')
+      .set('Authorization', authHeader())
       .send({ key: 'foo', value: 'bar' })
       .expect(201)
       .expect({ key: 'foo', value: 'bar', result: 'OK' });
@@ -135,6 +221,7 @@ describe('AppController (e2e)', () => {
     vi.mocked(redisFake.set).mockResolvedValueOnce('OK');
     await request(app.getHttpServer())
       .post('/redis')
+      .set('Authorization', authHeader())
       .send({
         key: 'foo',
         value: 'bar',
@@ -148,9 +235,17 @@ describe('AppController (e2e)', () => {
     });
   });
 
+  it('/redis (POST) returns 401 without a token', () => {
+    return request(app.getHttpServer())
+      .post('/redis')
+      .send({ key: 'foo', value: 'bar' })
+      .expect(401);
+  });
+
   it('/redis (POST) returns 400 for invalid option values', () => {
     return request(app.getHttpServer())
       .post('/redis')
+      .set('Authorization', authHeader())
       .send({
         key: 'foo',
         value: 'bar',
@@ -162,6 +257,7 @@ describe('AppController (e2e)', () => {
   it('/redis (POST) returns 400 for legacy flat options', () => {
     return request(app.getHttpServer())
       .post('/redis')
+      .set('Authorization', authHeader())
       .send({ key: 'foo', value: 'bar', options: { EX: 60, NX: true } })
       .expect(400);
   });
@@ -169,6 +265,7 @@ describe('AppController (e2e)', () => {
   it('/redis (POST) returns 400 for extra fields', () => {
     return request(app.getHttpServer())
       .post('/redis')
+      .set('Authorization', authHeader())
       .send({ key: 'foo', value: 'bar', key2: 'baz' })
       .expect(400);
   });
@@ -176,6 +273,7 @@ describe('AppController (e2e)', () => {
   it('/redis (POST) returns 400 for a missing key', () => {
     return request(app.getHttpServer())
       .post('/redis')
+      .set('Authorization', authHeader())
       .send({ value: 'bar' })
       .expect(400);
   });
@@ -183,6 +281,7 @@ describe('AppController (e2e)', () => {
   it('/redis (POST) returns 400 for a blank key', () => {
     return request(app.getHttpServer())
       .post('/redis')
+      .set('Authorization', authHeader())
       .send({ key: '   ', value: 'bar' })
       .expect(400);
   });

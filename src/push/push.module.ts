@@ -5,6 +5,7 @@
  */
 
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { WsModule } from '../ws/ws.module';
 import { PushController } from './push.controller';
 import { PushService } from './push.service';
@@ -16,7 +17,7 @@ import { PushService } from './push.service';
  * - provides `PushService` for boundary parsing plus fan-out.
  */
 @Module({
-  imports: [WsModule],
+  imports: [AuthModule, WsModule],
   controllers: [PushController],
   providers: [PushService],
 })

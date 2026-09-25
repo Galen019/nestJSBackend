@@ -88,6 +88,22 @@ export function parseClientId(value: unknown): ClientId | undefined {
 }
 
 /**
+ * Parses the raw `token` query value.
+ *
+ * - boundary parser, rejects missing, non-string, empty, and blank values
+ * - the token itself is verified later, this only checks presence.
+ *
+ * @param value Raw query value from the upgrade URL.
+ * @return The token string, or undefined when unusable.
+ */
+export function parseToken(value: unknown): string | undefined {
+  if (!isNonBlankString(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+/**
  * Checks that a value is a non-blank string.
  *
  * - shared narrowing behind the id parsers, rejects whitespace-only strings.

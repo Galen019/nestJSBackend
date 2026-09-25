@@ -1,7 +1,8 @@
 /**
- * E2E suite for the `/ws` gateway with real WebSocket clients.
+ * E2E suite for the `/ws` gateway with real WebSocket clients and JWT auth.
  *
- * - connect: sessions registered with userId/clientId/socket/sequenceNumber/heartbeatAt
+ * - connect: valid token + matching sub registers a session
+ * - auth: missing/invalid/expired token or sub mismatch closes with 1008
  * - send: server routes JSON to the right socket, false for unknown clients
  * - disconnect: session removed from the map
  * - duplicate: new socket closed, existing session kept
@@ -12,11 +13,17 @@ import { INestApplication, Logger } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
+import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { AppModule } from './../src/app.module';
 import { RedisService } from './../src/redis/redis.service';
 import { parseClientId, type ClientId } from './../src/ws/session.interface';
 import { WsService } from './../src/ws/ws.service';
+import {
+  TEST_JWT_AUDIENCE,
+  TEST_JWT_ISSUER,
+  signTestToken,
+} from './auth-test.helper';
 
 /**
  * Parses a test `clientId`, failing fast on bad literals.
@@ -35,6 +42,26 @@ function requireClientId(value: string): ClientId {
   return parsed;
 }
 
+/**
+ * Builds an authenticated query string for a WS connection.
+ *
+ * - signs a token with `sub` bound to `userId` unless overridden
+ * - extra overrides support expired/wrong-iss negative cases.
+ *
+ * @param userId User id for the query and token sub.
+ * @param clientId Client id for the query.
+ * @param overrides Token signing overrides for negative cases.
+ * @return The query string including the token.
+ */
+function authQuery(
+  userId: string,
+  clientId: string,
+  overrides: Parameters<typeof signTestToken>[0] = {},
+): string {
+  const token = signTestToken({ sub: userId, ...overrides });
+  return `userId=${encodeURIComponent(userId)}&clientId=${encodeURIComponent(clientId)}&token=${encodeURIComponent(token)}`;
+}
+
 describe('WsGateway (e2e)', () => {
   let app: INestApplication;
   let wsService: WsService;
@@ -42,6 +69,14 @@ describe('WsGateway (e2e)', () => {
   const clients: WebSocket[] = [];
 
   beforeEach(async () => {
+    process.env.JWT_PUBLIC_KEY_PATH = join(
+      process.cwd(),
+      'test',
+      'fixtures',
+      'test-public.pem',
+    );
+    process.env.JWT_ISSUER = TEST_JWT_ISSUER;
+    process.env.JWT_AUDIENCE = TEST_JWT_AUDIENCE;
     const redisFake = {
       ping: async () => 'PONG',
       isReady: () => true,
@@ -78,14 +113,14 @@ describe('WsGateway (e2e)', () => {
   /**
    * Opens a real client connection to `/ws` with the given query params.
    *
-   * - resolves when the socket opens
-   * - tracks the socket for teardown.
+   * - defaults to a valid identity with a matching token sub
+   * - resolves when the socket opens, tracks the socket for teardown.
    *
-   * @param query Query string after `/ws`, defaults to a valid identity.
+   * @param query Query string after `/ws`, defaults to an authed identity.
    * @return The open client socket.
    */
   function connectClient(
-    query = 'userId=user-123&clientId=client-456',
+    query = authQuery('user-123', 'client-456'),
   ): Promise<WebSocket> {
     return new Promise((resolve, reject) => {
       const client = new WebSocket(`${baseUrl}/ws?${query}`);
@@ -159,9 +194,57 @@ describe('WsGateway (e2e)', () => {
     expect(wsService.getSessionCount()).toBe(1);
   });
 
+  it('closes connections with a missing token and registers nothing', async () => {
+    const client = new WebSocket(
+      `${baseUrl}/ws?userId=user-123&clientId=client-456`,
+    );
+    clients.push(client);
+    const closeCode = waitForClose(client);
+
+    await expect(closeCode).resolves.toBe(1008);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(wsService.getSessionCount()).toBe(0);
+  });
+
+  it('closes connections with an invalid token and registers nothing', async () => {
+    const client = new WebSocket(
+      `${baseUrl}/ws?userId=user-123&clientId=client-456&token=bad`,
+    );
+    clients.push(client);
+    const closeCode = waitForClose(client);
+
+    await expect(closeCode).resolves.toBe(1008);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(wsService.getSessionCount()).toBe(0);
+  });
+
+  it('closes connections with an expired token', async () => {
+    const query = authQuery('user-123', 'client-456', { expiresIn: '-10s' });
+    const client = new WebSocket(`${baseUrl}/ws?${query}`);
+    clients.push(client);
+    const closeCode = waitForClose(client);
+
+    await expect(closeCode).resolves.toBe(1008);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(wsService.getSessionCount()).toBe(0);
+  });
+
+  it('closes connections on sub/userId mismatch', async () => {
+    const token = signTestToken({ sub: 'other-user' });
+    const client = new WebSocket(
+      `${baseUrl}/ws?userId=user-123&clientId=client-456&token=${encodeURIComponent(token)}`,
+    );
+    clients.push(client);
+    const closeCode = waitForClose(client);
+
+    await expect(closeCode).resolves.toBe(1008);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(wsService.getSessionCount()).toBe(0);
+  });
+
   it('routes sendToClient to the correct socket only', async () => {
-    const first = await connectClient('userId=user-1&clientId=client-1');
-    const second = await connectClient('userId=user-2&clientId=client-2');
+    const first = await connectClient(authQuery('user-1', 'client-1'));
+    const second = await connectClient(authQuery('user-2', 'client-2'));
     await waitForSessionCount(2);
     const secondMessage = nextMessage(second);
     let firstReceived = false;
@@ -202,10 +285,10 @@ describe('WsGateway (e2e)', () => {
   });
 
   it('closes the new socket and keeps the old session on duplicate clientId', async () => {
-    await connectClient('userId=user-123&clientId=client-456');
+    await connectClient(authQuery('user-123', 'client-456'));
     await waitForSessionCount(1);
     const duplicate = new WebSocket(
-      `${baseUrl}/ws?userId=user-123&clientId=client-456`,
+      `${baseUrl}/ws?${authQuery('user-123', 'client-456')}`,
     );
     clients.push(duplicate);
     const closeCode = waitForClose(duplicate);

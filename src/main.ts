@@ -1,6 +1,7 @@
 /**
  * Application bootstrap.
  */
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { WsAdapter } from '@nestjs/platform-ws';
