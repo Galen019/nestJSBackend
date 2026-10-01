@@ -2,7 +2,7 @@
  * Unit suite for JWT config loader.
  *
  * - uses temp PEM files, never the real env
- * - covers path vs inline key, missing values, and bad PEM.
+ * - covers file-path loading, missing values, and bad PEM.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -25,7 +25,6 @@ describe('getJwtConfig', () => {
 
   beforeEach(() => {
     for (const name of [
-      'JWT_PUBLIC_KEY',
       'JWT_PUBLIC_KEY_PATH',
       'JWT_ISSUER',
       'JWT_AUDIENCE',
@@ -64,27 +63,18 @@ describe('getJwtConfig', () => {
     expect(config.publicKey).toContain('BEGIN PUBLIC KEY');
   });
 
-  it('loads an inline key and unescapes newlines', () => {
-    const inline = fixturePublicKey().replace(/\n/g, '\\n');
-    process.env.JWT_PUBLIC_KEY = inline;
+  it('throws when no key path is configured', () => {
     process.env.JWT_ISSUER = 'test-issuer';
     process.env.JWT_AUDIENCE = 'test-audience';
 
-    const config = getJwtConfig();
-
-    expect(config.publicKey).toContain('BEGIN PUBLIC KEY');
-    expect(config.publicKey).toContain('\n');
-  });
-
-  it('throws when no key is configured', () => {
-    process.env.JWT_ISSUER = 'test-issuer';
-    process.env.JWT_AUDIENCE = 'test-audience';
-
-    expect(() => getJwtConfig()).toThrow(/JWT_PUBLIC_KEY/);
+    expect(() => getJwtConfig()).toThrow(/JWT_PUBLIC_KEY_PATH/);
   });
 
   it('throws when the key is not a PEM public key', () => {
-    process.env.JWT_PUBLIC_KEY = 'not-a-key';
+    dir = mkdtempSync(join(tmpdir(), 'jwt-'));
+    const keyPath = join(dir, 'public.pem');
+    writeFileSync(keyPath, 'not-a-key');
+    process.env.JWT_PUBLIC_KEY_PATH = keyPath;
     process.env.JWT_ISSUER = 'test-issuer';
     process.env.JWT_AUDIENCE = 'test-audience';
 
@@ -92,7 +82,10 @@ describe('getJwtConfig', () => {
   });
 
   it('throws when issuer or audience is missing', () => {
-    process.env.JWT_PUBLIC_KEY = fixturePublicKey();
+    dir = mkdtempSync(join(tmpdir(), 'jwt-'));
+    const keyPath = join(dir, 'public.pem');
+    writeFileSync(keyPath, fixturePublicKey());
+    process.env.JWT_PUBLIC_KEY_PATH = keyPath;
 
     expect(() => getJwtConfig()).toThrow(/JWT_ISSUER/);
 

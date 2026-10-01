@@ -23,33 +23,26 @@ export interface JwtConfig {
 /**
  * Reads the JWT public key from env.
  *
- * - prefers JWT_PUBLIC_KEY_PATH (file mount, Docker-friendly)
+ * - reads the PEM file at JWT_PUBLIC_KEY_PATH (file mount, Docker-friendly)
  * - relative paths resolve against the server working directory,
  *   so prefer an absolute path when the launch directory may vary
- * - falls back to JWT_PUBLIC_KEY (PEM string, `\n` sequences unescaped)
- * - throws when neither is set or the value is blank.
+ * - throws when unset, blank, or unreadable.
  *
  * @return The PEM-encoded public key.
  */
 function readPublicKey(): string {
   const keyPath = process.env.JWT_PUBLIC_KEY_PATH;
-  if (keyPath !== undefined && keyPath !== '') {
-    try {
-      return readFileSync(keyPath, 'utf8');
-    } catch {
-      throw new Error(
-        `Cannot read JWT public key at "${resolve(keyPath)}" ` +
-          `(working directory "${process.cwd()}")`,
-      );
-    }
+  if (keyPath === undefined || keyPath === '') {
+    throw new Error('Missing JWT_PUBLIC_KEY_PATH environment variable');
   }
-  const raw = process.env.JWT_PUBLIC_KEY;
-  if (raw === undefined || raw.trim() === '') {
+  try {
+    return readFileSync(keyPath, 'utf8');
+  } catch {
     throw new Error(
-      'Missing JWT_PUBLIC_KEY or JWT_PUBLIC_KEY_PATH environment variable',
+      `Cannot read JWT public key at "${resolve(keyPath)}" ` +
+        `(working directory "${process.cwd()}")`,
     );
   }
-  return raw.replace(/\\n/g, '\n');
 }
 
 /**
@@ -79,7 +72,7 @@ function readRequired(name: string): string {
 export function getJwtConfig(): JwtConfig {
   const publicKey = readPublicKey();
   if (!publicKey.includes('BEGIN PUBLIC KEY')) {
-    throw new Error('Invalid JWT_PUBLIC_KEY: expected PEM public key');
+    throw new Error('Invalid JWT public key: expected PEM public key');
   }
   return {
     publicKey,

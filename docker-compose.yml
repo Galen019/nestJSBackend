@@ -8,6 +8,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    volumes:
+      - ${TEST_PUBLIC_KEY_PATH:-./test/fixtures/test-public.pem}:/run/secrets/jwt-public.pem:ro
     environment:
       - NODE_ENV=production
       - PORT=${PORT:-3000}
@@ -15,8 +17,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}
-      - JWT_PUBLIC_KEY_PATH=${JWT_PUBLIC_KEY_PATH}
-      - JWT_PUBLIC_KEY=${JWT_PUBLIC_KEY}
+      - JWT_PUBLIC_KEY_PATH=/run/secrets/jwt-public.pem
       - JWT_ISSUER=${JWT_ISSUER}
       - JWT_AUDIENCE=${JWT_AUDIENCE}
   redis:

@@ -30,7 +30,6 @@ describe('JwtVerifierService', () => {
 
   beforeEach(() => {
     for (const name of [
-      'JWT_PUBLIC_KEY',
       'JWT_PUBLIC_KEY_PATH',
       'JWT_ISSUER',
       'JWT_AUDIENCE',
