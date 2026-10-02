@@ -119,7 +119,10 @@ export class WsService {
    * @param clientId Optional recipient for targeted log context.
    * @return The JSON string, or undefined when unserializable.
    */
-  private serializeMessage(message: unknown, clientId?: ClientId): string | undefined {
+  private serializeMessage(
+    message: unknown,
+    clientId?: ClientId,
+  ): string | undefined {
     let payload: unknown;
     try {
       payload = JSON.stringify(message);

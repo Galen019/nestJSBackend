@@ -31,9 +31,7 @@ export interface RedisEntry {
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
 
-  constructor(
-    @Inject(REDIS_CLIENT) private readonly client: RedisClientType,
-  ) {
+  constructor(@Inject(REDIS_CLIENT) private readonly client: RedisClientType) {
     this.client.on('error', (err: Error) => {
       this.logger.error(`Redis client error: ${err.message}`);
     });

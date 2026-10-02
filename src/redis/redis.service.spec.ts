@@ -81,10 +81,7 @@ describe('RedisService', () => {
     it('subscribes to client errors so socket failures do not crash the process', async () => {
       const module = await compile();
 
-      expect(client.on).toHaveBeenCalledWith(
-        'error',
-        expect.any(Function),
-      );
+      expect(client.on).toHaveBeenCalledWith('error', expect.any(Function));
       await module.close();
     });
 

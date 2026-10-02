@@ -29,11 +29,7 @@ describe('JwtVerifierService', () => {
   let verifier: JwtVerifierService;
 
   beforeEach(() => {
-    for (const name of [
-      'JWT_PUBLIC_KEY_PATH',
-      'JWT_ISSUER',
-      'JWT_AUDIENCE',
-    ]) {
+    for (const name of ['JWT_PUBLIC_KEY_PATH', 'JWT_ISSUER', 'JWT_AUDIENCE']) {
       saved[name] = process.env[name];
     }
     const keys = loadTestKeys();

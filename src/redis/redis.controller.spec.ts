@@ -82,7 +82,10 @@ describe('RedisController', () => {
     });
 
     it('resolves null expiry for persistent keys', async () => {
-      service.getEntry.mockResolvedValueOnce({ value: 'value', expiresIn: null });
+      service.getEntry.mockResolvedValueOnce({
+        value: 'value',
+        expiresIn: null,
+      });
 
       await expect(controller.getValue({ key: 'key' })).resolves.toEqual({
         key: 'key',

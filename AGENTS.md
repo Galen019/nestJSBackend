@@ -41,6 +41,39 @@ docker compose up --build
 
 No Jest. Don't run `nest start` directly.
 
+## Required Workflow
+
+**Before considering any task complete**, you MUST verify:
+
+1. Run `npm run format` to auto-format code
+2. Run `npm run lint` and fix all issues (try `make fmt` again if needed)
+3. Run `npm test` and `npm run test:e2e` and ensure all tests pass
+
+These checks are mandatory for the entire repository, not just files you modified.
+
+Do not skip, disable, or bypass these checks (e.g. `--no-verify`, commenting out linters, adding broad `//nolint` directives) to make CI pass. Fix the underlying issue.
+
+## Tests
+
+- All new functionality must include tests.
+- Bug fixes must include a regression test that fails without the fix.
+- Do not delete existing tests to make a build green. If a test is genuinely wrong, explain why in the PR description.
+- Do not weaken assertions (e.g. replacing exact checks with `expect(data).not.toBeNull()`) just to make a flaky test pass.
+- Every .ts file must have at least one `*spec.ts` file If no tests are possible (e.g. a package that only defines types), do nothing.
+
+## Scope Discipline
+
+- Do not reformat, rename, or restructure code outside the scope of the requested change.
+- Do not bump dependencies unless the task requires it.
+- Do not change CI workflows or release tooling unless explicitly asked.
+- Before adding a flag or field that controls behavior, find the mechanism that already owns that decision and extend it. Expressing one decision in two places is worse than either place alone, and replacing an established mechanism is a maintainer's call.
+
+## When in Doubt
+
+Stop and ask rather than guessing. It is better to surface a question in the PR description than to invent behavior, fabricate API names, or silence failing checks.
+
+Ask as well when you are *not* in doubt but are about to depart from a documented convention, because that is where confidence is least informative.
+
 ## Conventions (repo-specific, enforced)
 
 - Thin controllers / fat services. New domain `foo` → `src/foo/foo.module.ts`, `foo.controller.ts`, `foo.service.ts`, `foo.service.spec.ts` (+ `dto/`), import into `AppModule`. Never `new Service()` in prod code; constructor injection needs real types or `@Inject()` tokens (interfaces break DI — `emitDecoratorMetadata` must stay on).

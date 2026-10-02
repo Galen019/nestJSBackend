@@ -12,7 +12,7 @@
     "sourceMap": true,
     "outDir": "./dist",
     "rootDir": "./src",
-    "paths": {"*": ["./*"]},
+    "paths": { "*": ["./*"] },
     "incremental": true,
     "skipLibCheck": true,
     "strict": true,

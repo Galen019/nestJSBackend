@@ -24,11 +24,7 @@ describe('getJwtConfig', () => {
   let dir: string | undefined;
 
   beforeEach(() => {
-    for (const name of [
-      'JWT_PUBLIC_KEY_PATH',
-      'JWT_ISSUER',
-      'JWT_AUDIENCE',
-    ]) {
+    for (const name of ['JWT_PUBLIC_KEY_PATH', 'JWT_ISSUER', 'JWT_AUDIENCE']) {
       saved[name] = process.env[name];
       delete process.env[name];
     }
