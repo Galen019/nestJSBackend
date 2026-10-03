@@ -8,6 +8,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      dynamodb:
+        condition: service_started
     volumes:
       - ${TEST_PUBLIC_KEY_PATH:-./test/fixtures/test-public.pem}:/run/secrets/jwt-public.pem:ro
     environment:
@@ -28,6 +30,10 @@ services:
       # OTEL_TRACES_SAMPLER is read natively by the SDK (no app mapping).
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
       - OTEL_TRACES_SAMPLER=${OTEL_TRACES_SAMPLER:-parentbased_always_on}
+      - DYNAMODB_ENDPOINT=http://dynamodb:8000
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-local}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-local}
   jaeger:
     image: jaegertracing/jaeger:2.20.0
     ports:
@@ -49,3 +55,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  dynamodb:
+    image: amazon/dynamodb-local:3.3.1
+    ports:
+      - '127.0.0.1:${DYNAMODB_PORT:-8000}:8000'
+    restart: unless-stopped

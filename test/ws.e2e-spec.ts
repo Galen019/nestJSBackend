@@ -16,6 +16,7 @@ import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { AppModule } from './../src/app.module';
+import { DynamoService } from './../src/dynamo/dynamo.service';
 import { RedisService } from './../src/redis/redis.service';
 import { parseClientId, type ClientId } from './../src/ws/session.interface';
 import { WsService } from './../src/ws/ws.service';
@@ -24,6 +25,7 @@ import {
   TEST_JWT_ISSUER,
   signTestToken,
 } from './auth-test.helper';
+import { createDynamoFake } from './dynamo-test.helper';
 
 /**
  * Parses a test `clientId`, failing fast on bad literals.
@@ -83,11 +85,14 @@ describe('WsGateway (e2e)', () => {
       getEntry: async () => null,
       set: async () => 'OK',
     };
+    const dynamoFake = createDynamoFake();
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(RedisService)
       .useValue(redisFake)
+      .overrideProvider(DynamoService)
+      .useValue(dynamoFake)
       .compile();
 
     app = moduleFixture.createNestApplication();
