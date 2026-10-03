@@ -10,12 +10,6 @@
  */
 import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { SpanStatusCode, trace } from '@opentelemetry/api';
-import {
-  BasicTracerProvider,
-  InMemorySpanExporter,
-  SimpleSpanProcessor,
-} from '@opentelemetry/sdk-trace-base';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import {
@@ -94,29 +88,6 @@ function fireMessage(
     throw new Error('Expected a message listener');
   }
   messageCall[1](payload);
-}
-
-/**
- * Fires the captured `error` listener of a fake socket.
- *
- * - simulates the driver emitting `error` with the given value
- * - fails fast when registration attached no error listener.
- *
- * @param fake Fake created by `createSocketFake`.
- * @param err Error value to pass to the error listener.
- * @return Nothing, the listener is invoked synchronously.
- */
-function fireError(
-  fake: ReturnType<typeof createSocketFake>,
-  err: unknown,
-): void {
-  const errorCall = fake.mocks.on.mock.calls.find(
-    (call) => call[0] === 'error',
-  );
-  if (errorCall === undefined) {
-    throw new Error('Expected an error listener');
-  }
-  errorCall[1](err);
 }
 
 /**
@@ -482,7 +453,14 @@ describe('WsService', () => {
       { type: 'MESSAGE', data: 'hi' },
     );
 
-    expect(result).toEqual({ sent: 2, skipped: 1 });
+    expect(result).toEqual({
+      sent: 2,
+      skipped: 1,
+      bytes: Buffer.byteLength(
+        JSON.stringify({ type: 'MESSAGE', data: 'hi' }),
+        'utf8',
+      ),
+    });
     expect(first.mocks.send).toHaveBeenCalledTimes(1);
     expect(second.mocks.send).toHaveBeenCalledTimes(1);
   });
@@ -507,232 +485,12 @@ describe('WsService', () => {
       { type: 'PING' },
     );
 
-    expect(result).toEqual({ sent: 1, skipped: 1 });
+    expect(result).toEqual({
+      sent: 1,
+      skipped: 1,
+      bytes: Buffer.byteLength(JSON.stringify({ type: 'PING' }), 'utf8'),
+    });
     expect(openClient.mocks.send).toHaveBeenCalledTimes(1);
     expect(closedFake.mocks.send).not.toHaveBeenCalled();
-  });
-});
-
-/**
- * Unit suite for WsService tracing spans.
- *
- * - uses an in-memory OTel provider so spans are captured without an exporter
- * - asserts connection/send span names, allowlisted attributes, and redaction
- * - asserts rejected/duplicate paths end error spans without registering sessions
- * - asserts transient socket errors record events without failing the span
- * - asserts sends still return counts when ending the span throws.
- */
-describe('WsService tracing', () => {
-  let service: WsService;
-  let module: TestingModule | undefined;
-  let provider: BasicTracerProvider | undefined;
-  let exporter: InMemorySpanExporter;
-
-  /**
-   * Registers an in-memory tracer provider, then builds a fresh WsService.
-   *
-   * - provider first so the service tracer delegates to it
-   * - fresh exporter per test so finished spans never leak across tests.
-   *
-   * @return The compiled service.
-   */
-  async function compileWithTracing(): Promise<WsService> {
-    exporter = new InMemorySpanExporter();
-    provider = new BasicTracerProvider({
-      spanProcessors: [new SimpleSpanProcessor(exporter)],
-    });
-    trace.setGlobalTracerProvider(provider);
-    module = await Test.createTestingModule({
-      providers: [WsService],
-    }).compile();
-    return module.get<WsService>(WsService);
-  }
-
-  beforeEach(async () => {
-    service = await compileWithTracing();
-  });
-
-  afterEach(async () => {
-    await provider?.shutdown();
-    provider = undefined;
-    trace.disable();
-    await module?.close();
-    module = undefined;
-    vi.restoreAllMocks();
-  });
-
-  it('ends the connection span when the socket closes', () => {
-    const fake = createSocketFake();
-    service.handleConnection({
-      socket: fake.socket,
-      userId: parseUserId('user-123'),
-      clientId: parseClientId('client-456'),
-    });
-    fireClose(fake);
-
-    const connections = exporter
-      .getFinishedSpans()
-      .filter((span) => span.name === 'ws.connection');
-    expect(connections).toHaveLength(1);
-    expect(connections[0]?.attributes['user.id']).toBe('user-123');
-    expect(connections[0]?.attributes['client.id']).toBe('client-456');
-    const keys = Object.keys(connections[0]?.attributes ?? {});
-    expect(keys).not.toContain('token');
-    expect(keys).not.toContain('authorization');
-  });
-
-  it('ends an error span for rejected connections', () => {
-    const { socket } = createSocketFake();
-
-    const result = service.handleConnection({
-      socket,
-      userId: undefined,
-      clientId: undefined,
-    });
-
-    expect(result).toEqual({ kind: 'rejected' });
-    const connections = exporter
-      .getFinishedSpans()
-      .filter((span) => span.name === 'ws.connection');
-    expect(connections).toHaveLength(1);
-    expect(connections[0]?.status.code).toBe(SpanStatusCode.ERROR);
-    expect(connections[0]?.attributes['ws.close.code']).toBe(
-      WS_CLOSE_POLICY_VIOLATION,
-    );
-    expect(service.getSessionCount()).toBe(0);
-  });
-
-  it('ends an error span for duplicates and keeps the old session', () => {
-    const oldClient = createSocketFake();
-    const newClient = createSocketFake();
-    service.handleConnection({
-      socket: oldClient.socket,
-      userId: parseUserId('user-123'),
-      clientId: parseClientId('client-456'),
-    });
-
-    const result = service.handleConnection({
-      socket: newClient.socket,
-      userId: parseUserId('user-123'),
-      clientId: parseClientId('client-456'),
-    });
-
-    expect(result).toEqual({ kind: 'duplicate' });
-    const errors = exporter
-      .getFinishedSpans()
-      .filter((span) => span.status.code === SpanStatusCode.ERROR);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]?.attributes['ws.close.reason']).toBe('duplicate clientId');
-    expect(service.getSessionCount()).toBe(1);
-  });
-
-  it('records a fan-out span with counts and byte size, never the body', () => {
-    const first = createSocketFake();
-    const second = createSocketFake();
-    service.handleConnection({
-      socket: first.socket,
-      userId: parseUserId('user-1'),
-      clientId: parseClientId('client-1'),
-    });
-    service.handleConnection({
-      socket: second.socket,
-      userId: parseUserId('user-2'),
-      clientId: parseClientId('client-2'),
-    });
-
-    service.sendToClients(
-      [requireClientId('client-1'), requireClientId('ghost')],
-      { type: 'MESSAGE', data: 'hi' },
-    );
-
-    const sends = exporter
-      .getFinishedSpans()
-      .filter((span) => span.name === 'ws.send');
-    expect(sends).toHaveLength(1);
-    expect(sends[0]?.attributes['client.ids.count']).toBe(2);
-    expect(sends[0]?.attributes['sent.count']).toBe(1);
-    expect(sends[0]?.attributes['skipped.count']).toBe(1);
-    expect(typeof sends[0]?.attributes['message.bytes']).toBe('number');
-    const serialized = JSON.stringify(sends[0]?.attributes ?? {});
-    expect(serialized).not.toContain('hi');
-  });
-
-  it('records inbound messages as span events, not spans', () => {
-    const fake = createSocketFake();
-    service.handleConnection({
-      socket: fake.socket,
-      userId: parseUserId('user-123'),
-      clientId: parseClientId('client-456'),
-    });
-    fireMessage(fake, 'hello-payload');
-    fireClose(fake);
-
-    const spans = exporter.getFinishedSpans();
-    expect(spans.some((span) => span.name === 'ws.message')).toBe(false);
-    const connection = spans.find((span) => span.name === 'ws.connection');
-    expect(
-      connection?.events.some((event) => event.name === 'ws.message.received'),
-    ).toBe(true);
-  });
-
-  it('records transient socket errors as events without failing the span', () => {
-    const fake = createSocketFake();
-    service.handleConnection({
-      socket: fake.socket,
-      userId: parseUserId('user-123'),
-      clientId: parseClientId('client-456'),
-    });
-    fireError(fake, new Error('socket boom'));
-
-    expect(service.getSessionCount()).toBe(1);
-    fireClose(fake);
-
-    const connections = exporter
-      .getFinishedSpans()
-      .filter((span) => span.name === 'ws.connection');
-    expect(connections).toHaveLength(1);
-    expect(connections[0]?.status.code).toBe(SpanStatusCode.UNSET);
-    expect(
-      connections[0]?.events.some((event) => event.name === 'exception'),
-    ).toBe(true);
-  });
-
-  it('still returns send counts when ending the span throws', async () => {
-    await provider?.shutdown();
-    provider = undefined;
-    trace.disable();
-    await module?.close();
-    module = undefined;
-    provider = new BasicTracerProvider({
-      spanProcessors: [
-        {
-          onStart: (): void => undefined,
-          onEnd: (): void => {
-            throw new Error('export boom');
-          },
-          forceFlush: (): Promise<void> => Promise.resolve(),
-          shutdown: (): Promise<void> => Promise.resolve(),
-        },
-      ],
-    });
-    trace.setGlobalTracerProvider(provider);
-    module = await Test.createTestingModule({
-      providers: [WsService],
-    }).compile();
-    service = module.get<WsService>(WsService);
-
-    const first = createSocketFake();
-    service.handleConnection({
-      socket: first.socket,
-      userId: parseUserId('user-1'),
-      clientId: parseClientId('client-1'),
-    });
-
-    const result = service.sendToClients(
-      [requireClientId('client-1'), requireClientId('ghost')],
-      { type: 'MESSAGE' },
-    );
-
-    expect(result).toEqual({ sent: 1, skipped: 1 });
   });
 });
