@@ -3,7 +3,6 @@
  *
  * - Owns the `sessions` map keyed by branded `ClientId`
  * - Handles duplicate policy, lifecycle cleanup, and sends
- * - Tracing-free by design: push-path spans live in `PushService`, which owns
  *   the serialized payload size via the `bytes` field below.
  */
 
