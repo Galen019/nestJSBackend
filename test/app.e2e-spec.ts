@@ -1,9 +1,10 @@
 /**
- * E2E suite for HTTP routes with mocked RedisService and JWT auth.
+ * E2E suite for HTTP routes with mocked RedisService/DynamoService and JWT auth.
  *
  * - registers WsAdapter so the `/ws` gateway boots alongside HTTP routes
  * - JWT: test code signs RS256 tokens, API verifies iss/aud/exp via global guard
  * - GET /health stays @Public(); GET / and /redis require a valid Bearer token
+ * - GET /health: ok/up with both deps, 503 degraded when DynamoDB is down
  * - GET /redis?key: hit 200 with value and TTL, persistent null, miss 404, missing or blank key 400
  * - POST /redis: 201 without options with edge default TTL, 201 with options
  * - POST /redis: 400 on invalid options, legacy shape, extra fields, missing or blank key
@@ -18,6 +19,7 @@ import request from 'supertest';
 import type { SetOptions } from 'redis';
 import { AppModule } from './../src/app.module';
 import { createGlobalValidationPipe } from './../src/app.pipes';
+import { DynamoService } from './../src/dynamo/dynamo.service';
 import { DEFAULT_SET_TTL_SECONDS } from './../src/redis/redis.constants';
 import { RedisService, type RedisEntry } from './../src/redis/redis.service';
 import {
@@ -26,9 +28,11 @@ import {
   bearerHeader,
   signTestToken,
 } from './auth-test.helper';
+import { createDynamoFake, type DynamoFake } from './dynamo-test.helper';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
+  let dynamoFake: DynamoFake;
   let redisFake: {
     ping: () => Promise<string>;
     isReady: () => boolean;
@@ -49,6 +53,7 @@ describe('AppController (e2e)', () => {
     );
     process.env.JWT_ISSUER = TEST_JWT_ISSUER;
     process.env.JWT_AUDIENCE = TEST_JWT_AUDIENCE;
+    dynamoFake = createDynamoFake();
     redisFake = {
       ping: async () => 'PONG',
       isReady: () => true,
@@ -66,6 +71,8 @@ describe('AppController (e2e)', () => {
     })
       .overrideProvider(RedisService)
       .useValue(redisFake)
+      .overrideProvider(DynamoService)
+      .useValue(dynamoFake)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -103,7 +110,15 @@ describe('AppController (e2e)', () => {
     return request(app.getHttpServer())
       .get('/health')
       .expect(200)
-      .expect({ status: 'ok', redis: 'up' });
+      .expect({ status: 'ok', redis: 'up', dynamo: 'up' });
+  });
+
+  it('/health (GET) returns 503 when DynamoDB is down', async () => {
+    dynamoFake.ping.mockRejectedValueOnce(new Error('Unreachable'));
+    await request(app.getHttpServer())
+      .get('/health')
+      .expect(503)
+      .expect({ status: 'degraded', redis: 'up', dynamo: 'down' });
   });
 
   it('/redis?key (GET) resolves the stored value with TTL', () => {

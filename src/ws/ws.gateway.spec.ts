@@ -25,7 +25,9 @@ function createSocketStub(): {
   socket: SessionSocket;
   close: ReturnType<typeof vi.fn>;
 } {
-  const close = vi.fn((_code?: number, _reason?: string) => undefined);
+  const close = vi
+    .fn<(code?: number, reason?: string) => void>()
+    .mockReturnValue(undefined);
   const socket: SessionSocket = {
     readyState: WebSocket.OPEN,
     on: (): void => undefined,

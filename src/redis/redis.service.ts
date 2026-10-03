@@ -1,3 +1,9 @@
+/**
+ * Lifecycle wrapper around the injected Redis client.
+ *
+ * - connects on module init via the shared bounded-retry helper
+ * - exposes `ping()`/`isReady()` plus key CRUD for health checks and routes.
+ */
 import {
   Inject,
   Injectable,
@@ -6,15 +12,8 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import type { RedisClientType, SetOptions } from 'redis';
+import { withBoundedRetry } from '../common/retry';
 import { REDIS_CLIENT } from './redis.constants';
-
-const MAX_CONNECT_ATTEMPTS = 10;
-const INITIAL_RETRY_DELAY_MS = 500;
-const MAX_RETRY_DELAY_MS = 5000;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export interface RedisEntry {
   value: string;
@@ -40,33 +39,13 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   /**
    * Connects to Redis on module init with bounded exponential-backoff retries.
    *
-   * - attempts `client.connect()` up to MAX_CONNECT_ATTEMPTS times
-   * - waits with exponential delay capped at MAX_RETRY_DELAY_MS between attempts
+   * - delegates the retry policy to the shared `withBoundedRetry` helper
    * - throws the last error when all attempts fail.
    */
   async onModuleInit(): Promise<void> {
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt++) {
-      try {
-        await this.client.connect();
-        return;
-      } catch (err) {
-        lastError = err;
-        if (attempt < MAX_CONNECT_ATTEMPTS) {
-          await sleep(
-            Math.min(
-              INITIAL_RETRY_DELAY_MS * 2 ** (attempt - 1),
-              MAX_RETRY_DELAY_MS,
-            ),
-          );
-        }
-      }
-    }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error(
-          `Failed to connect to Redis after ${MAX_CONNECT_ATTEMPTS} attempts`,
-        );
+    await withBoundedRetry(() => this.client.connect(), {
+      failureMessage: 'Failed to connect to Redis after 10 attempts',
+    });
   }
 
   async onModuleDestroy(): Promise<void> {
