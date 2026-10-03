@@ -8,6 +8,11 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import { AppModule } from './app.module';
 import { createGlobalValidationPipe } from './app.pipes';
 import { getGrpcUrl, getProtoPath, PUSH_PACKAGE } from './push/push.constants';
+import { initTracing } from './tracing';
+
+// Tracing starts before the Nest application is created so HTTP
+// auto-instrumentation wraps the server created in `bootstrap`.
+initTracing();
 
 /**
  * Boots the Nest application.

@@ -7,6 +7,7 @@
  */
 
 import { Injectable, Logger } from '@nestjs/common';
+import type { Context } from '@opentelemetry/api';
 import { parseClientId, type ClientId } from '../ws/session.interface';
 import { WsService } from '../ws/ws.service';
 import {
@@ -70,10 +71,11 @@ export class PushService {
    * - never throws, missing/closed sockets are skipped inside `WsService`.
    *
    * @param raw Raw chunk from the gRPC stream.
+   * @param parent Optional parent span context for the fan-out `ws.send` span.
    * @return Nothing, delivery counts are logged at debug level.
    */
-  publish(raw: unknown): void {
-    this.publishNormalized(normalizeChunk(raw));
+  publish(raw: unknown, parent?: Context): void {
+    this.publishNormalized(normalizeChunk(raw), parent);
   }
 
   /**
@@ -84,9 +86,10 @@ export class PushService {
    * - never throws, missing/closed sockets are skipped inside `WsService`.
    *
    * @param chunk Normalized ids plus opaque message from the quota path.
+   * @param parent Optional parent span context for the fan-out `ws.send` span.
    * @return Nothing, delivery counts are logged at debug level.
    */
-  publishNormalized(chunk: NormalizedChunk): void {
+  publishNormalized(chunk: NormalizedChunk, parent?: Context): void {
     const { ids, message } = chunk;
     const capped = ids.slice(0, MAX_CLIENT_IDS);
     if (ids.length > MAX_CLIENT_IDS) {
@@ -105,7 +108,11 @@ export class PushService {
       return;
     }
     const payload = this.coerceMessage(message);
-    const { sent, skipped } = this.wsService.sendToClients(parsed, payload);
+    const { sent, skipped } = this.wsService.sendToClients(
+      parsed,
+      payload,
+      parent,
+    );
     this.logger.debug(
       `Fan-out to ${parsed.length} clients: sent ${sent}, skipped ${skipped}`,
     );
