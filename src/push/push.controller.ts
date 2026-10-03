@@ -10,6 +10,14 @@ import { Controller } from '@nestjs/common';
 import { GrpcStreamMethod, RpcException } from '@nestjs/microservices';
 import { status } from '@grpc/grpc-js';
 import type { Metadata } from '@grpc/grpc-js';
+import {
+  context,
+  SpanStatusCode,
+  trace,
+  type Context,
+  type Span,
+  type Tracer,
+} from '@opentelemetry/api';
 import { finalize, map, reduce, tap, throwError, timeout } from 'rxjs';
 import type { Observable } from 'rxjs';
 import { JwtVerifierService } from '../auth/jwt-verifier.service';
@@ -42,6 +50,8 @@ export interface PublishSummary {
  */
 @Controller()
 export class PushController {
+  private readonly tracer: Tracer = trace.getTracer('gRPC-stream-push');
+
   constructor(
     private readonly pushService: PushService,
     private readonly verifier: JwtVerifierService,
@@ -54,7 +64,12 @@ export class PushController {
    * - rejects with RESOURCE_EXHAUSTED when no stream slot is free
    * - each chunk passes through `StreamBudget.consume`, then fans out
    * - counts chunks with `reduce`, maps the count to `{ received }`
-   * - releases the stream slot on completion, error, or cancellation.
+   * - releases the stream slot on completion, error, or cancellation, even when
+   *   ending the span throws, so tracing can never leak stream slots
+   * - traces the stream (`push.publish`) plus one child span per chunk
+   *   (`push.chunk` with index, id count, and byte size, never bodies)
+   * - fan-out `ws.send` spans parent under their `push.chunk` span via an
+   *   explicitly threaded chunk context (no ambient propagation).
    *
    * @param messages Observable of stream chunks from the gRPC caller.
    * @param metadata gRPC call metadata carrying the Bearer token.
@@ -87,19 +102,105 @@ export class PushController {
       );
     }
     const budget = new StreamBudget();
+    const streamSpan = this.tracer.startSpan('push.publish');
+    streamSpan.setAttributes({
+      'rpc.system': 'grpc',
+      'rpc.service': 'push.PushService',
+      'rpc.method': 'Publish',
+    });
+    const streamContext = trace.setSpan(context.active(), streamSpan);
+    let chunkIndex = 0;
     return messages.pipe(
       timeout({
         each: MAX_STREAM_DURATION_MS,
         with: () => throwError(() => budget.timeoutError()),
       }),
-      tap((message) => {
-        this.pushService.publishNormalized(budget.consume(message));
+      tap({
+        next: (message) => {
+          this.publishChunk(streamContext, budget, chunkIndex, message);
+          chunkIndex += 1;
+        },
+        error: (error: unknown) => {
+          recordSpanError(streamSpan, error);
+        },
       }),
       reduce((count) => count + 1, 0),
+      tap({
+        next: (received) => {
+          streamSpan.setAttribute('push.received', received);
+        },
+        error: (error: unknown) => {
+          recordSpanError(streamSpan, error);
+        },
+      }),
       map((received) => ({ received })),
-      finalize(release),
+      finalize(() => {
+        try {
+          streamSpan.end();
+        } finally {
+          release();
+        }
+      }),
     );
   }
+
+  /**
+   * Fans out one chunk inside its own child span.
+   *
+   * - explicit parent context because RxJS breaks ambient context propagation
+   * - quota breaches end the chunk span as ERROR and rethrow to end the RPC
+   * - attributes are counts and sizes only, never ids lists or bodies
+   * - threads the chunk context through the fan-out so `ws.send` spans parent
+   *   under this chunk explicitly (no reliance on ambient propagation, which
+   *   is inert without an AsyncLocalStorage context manager).
+   *
+   * @param parent Stream span context to parent the chunk span to.
+   * @param budget Per-stream quota tracker.
+   * @param index Zero-based chunk position in the stream.
+   * @param message Raw chunk from the gRPC stream.
+   * @return Nothing, the chunk is fanned out as a side effect.
+   */
+  private publishChunk(
+    parent: Context,
+    budget: StreamBudget,
+    index: number,
+    message: PublishRequestGrpc,
+  ): void {
+    const chunkSpan = this.tracer.startSpan('push.chunk', undefined, parent);
+    const chunkContext = trace.setSpan(parent, chunkSpan);
+    chunkSpan.setAttribute('grpc.chunk.index', index);
+    try {
+      const chunk = budget.consume(message);
+      chunkSpan.setAttribute('grpc.client_ids.count', chunk.ids.length);
+      chunkSpan.setAttribute(
+        'grpc.message.bytes',
+        typeof chunk.message === 'string'
+          ? Buffer.byteLength(chunk.message, 'utf8')
+          : 0,
+      );
+      this.pushService.publishNormalized(chunk, chunkContext);
+    } catch (error) {
+      recordSpanError(chunkSpan, error);
+      throw error;
+    } finally {
+      chunkSpan.end();
+    }
+  }
+}
+
+/**
+ * Records an error on a span without leaking payloads.
+ *
+ * - records the exception for stack detail, marks the span ERROR
+ * - status carries no message so raw payloads never land in span metadata.
+ *
+ * @param span Span to mark as failed.
+ * @param error Raw error value from the stream.
+ * @return Nothing, the span is updated in place.
+ */
+function recordSpanError(span: Span, error: unknown): void {
+  span.recordException(error instanceof Error ? error : String(error));
+  span.setStatus({ code: SpanStatusCode.ERROR });
 }
 
 /**

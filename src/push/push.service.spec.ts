@@ -4,9 +4,11 @@
  * - mocks WsService.sendToClients, asserts parsed ids and coerced payloads
  * - covers id parsing, blanks dropped, cap enforced, fire-and-forget empties
  * - covers JSON message parsing, truncation, and non-string passthrough
+ * - covers parent-context threading for trace continuity
  * - covers stream slot handles up to the concurrency cap
  */
 import { Test, TestingModule } from '@nestjs/testing';
+import { context, trace, type Context } from '@opentelemetry/api';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WsService } from '../ws/ws.service';
 import {
@@ -54,13 +56,13 @@ describe('PushService', () => {
     service.publish({ clientIds: ['a', 'b'], message: '{"x":1}' });
 
     expect(sendToClients).toHaveBeenCalledTimes(1);
-    expect(sendToClients).toHaveBeenCalledWith(['a', 'b'], { x: 1 });
+    expect(sendToClients).toHaveBeenCalledWith(['a', 'b'], { x: 1 }, undefined);
   });
 
   it('forwards plain string messages untouched', () => {
     service.publish({ clientIds: ['a'], message: 'hello' });
 
-    expect(sendToClients).toHaveBeenCalledWith(['a'], 'hello');
+    expect(sendToClients).toHaveBeenCalledWith(['a'], 'hello', undefined);
   });
 
   it('drops blank ids and does nothing when none remain', () => {
@@ -106,13 +108,23 @@ describe('PushService', () => {
 
     service.publish({ clientIds: ['a'], message });
 
-    expect(sendToClients).toHaveBeenCalledWith(['a'], message);
+    expect(sendToClients).toHaveBeenCalledWith(['a'], message, undefined);
   });
 
   it('fans out an already-normalized chunk', () => {
     service.publishNormalized({ ids: ['a'], message: 'hello' });
 
-    expect(sendToClients).toHaveBeenCalledWith(['a'], 'hello');
+    expect(sendToClients).toHaveBeenCalledWith(['a'], 'hello', undefined);
+  });
+
+  it('threads the parent context through to the fan-out', () => {
+    const parent: Context = trace.deleteSpan(context.active());
+
+    service.publish({ clientIds: ['a'], message: 'hello' }, parent);
+    service.publishNormalized({ ids: ['a'], message: 'hello' }, parent);
+
+    expect(sendToClients).toHaveBeenNthCalledWith(1, ['a'], 'hello', parent);
+    expect(sendToClients).toHaveBeenNthCalledWith(2, ['a'], 'hello', parent);
   });
 
   it('hands out release handles up to the concurrency cap', () => {
