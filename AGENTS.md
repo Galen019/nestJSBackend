@@ -46,7 +46,7 @@ No Jest. Don't run `nest start` directly.
 **Before considering any task complete**, you MUST verify:
 
 1. Run `npm run format` to auto-format code
-2. Run `npm run lint` and fix all issues (try `make fmt` again if needed)
+2. Run `npm run lint` and fix all issues
 3. Run `npm test` and `npm run test:e2e` and ensure all tests pass
 
 These checks are mandatory for the entire repository, not just files you modified.

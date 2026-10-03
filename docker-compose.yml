@@ -22,7 +22,11 @@ services:
       - JWT_AUDIENCE=${JWT_AUDIENCE}
       - OTEL_ENABLED=${OTEL_ENABLED:-true}
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-nestJS-server}
-      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+      # OTLP/gRPC traces endpoint. Must stay in sync with DEFAULT_OTLP_ENDPOINT
+      # in src/tracing.ts. The server uses the gRPC exporter, which Jaeger
+      # serves on 4317; 4318 is OTLP/HTTP and needs the HTTP exporter instead.
+      # OTEL_TRACES_SAMPLER is read natively by the SDK (no app mapping).
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
       - OTEL_TRACES_SAMPLER=${OTEL_TRACES_SAMPLER:-parentbased_always_on}
   jaeger:
     image: jaegertracing/jaeger:2.20.0

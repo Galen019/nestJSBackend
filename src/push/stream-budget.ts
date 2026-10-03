@@ -49,12 +49,13 @@ export function normalizeChunk(raw: unknown): NormalizedChunk {
 /**
  * Measures the utf8 byte size of one chunk message.
  *
- * - counts bytes of string messages, zero for missing or non-string ones.
+ * - counts bytes of string messages, zero for missing or non-string ones
+ * - shared with the push span attributes so quotas and traces measure alike.
  *
  * @param message Raw message value from the chunk.
  * @return Byte usage of the message.
  */
-function messageBytes(message: unknown): number {
+export function messageBytes(message: unknown): number {
   return typeof message === 'string' ? Buffer.byteLength(message, 'utf8') : 0;
 }
 
