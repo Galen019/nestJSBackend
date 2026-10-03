@@ -19,6 +19,7 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import type { IncomingMessage } from 'node:http';
+import { parseEnvFlag } from './common/env';
 
 /**
  * Default OTLP/gRPC traces endpoint (in-compose Jaeger).
@@ -66,7 +67,8 @@ let shutdownHookRegistered = false;
  * Parses the `OTEL_ENABLED` toggle.
  *
  * - `undefined`/blank means enabled (code default true, tests force false via env)
- * - `true`/`1`/`yes` mean enabled, `false`/`0`/`no` mean disabled
+ * - the truthy set comes from the canonical `parseEnvFlag` helper
+ * - `false`/`0`/`no` mean disabled
  * - anything else warns and stays enabled so a typo cannot silently kill
  *   tracing in one environment while it runs in another.
  *
@@ -75,12 +77,7 @@ let shutdownHookRegistered = false;
  */
 export function parseEnabled(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase() ?? '';
-  if (
-    normalized === '' ||
-    normalized === 'true' ||
-    normalized === '1' ||
-    normalized === 'yes'
-  ) {
+  if (normalized === '' || parseEnvFlag(value)) {
     return true;
   }
   if (normalized === 'false' || normalized === '0' || normalized === 'no') {

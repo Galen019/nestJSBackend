@@ -2,15 +2,25 @@
  * Test suite for DynamoService with a mocked DynamoDB client.
  *
  * - onModuleInit: connects without retry, retries then connects, exhausts
+ * - bootstrap gate: skips non-local endpoints, creates on local, forces via flag
+ * - TTL: enables disabled TTL, skips already-enabled TTL
  * - ping: delegates to ListTables, propagates errors
  * - onModuleDestroy: destroys the client
  * - getClient: returns the injected client
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import {
+  CreateTableCommand,
+  DescribeTableCommand,
+  DescribeTimeToLiveCommand,
+  ListTablesCommand,
+  UpdateTimeToLiveCommand,
+  type DynamoDBClient,
+} from '@aws-sdk/client-dynamodb';
 import { DYNAMO_CLIENT } from './dynamo.constants';
 import { DynamoService } from './dynamo.service';
+import { TABLE_DEFINITIONS } from './table-defs';
 
 /**
  * Creates a fresh mocked DynamoDB client for DI.
@@ -19,16 +29,30 @@ import { DynamoService } from './dynamo.service';
  */
 function createClientFake() {
   return {
-    send: vi.fn<() => Promise<unknown>>().mockResolvedValue({ TableNames: [] }),
+    send: vi
+      .fn<(command: unknown) => Promise<unknown>>()
+      .mockResolvedValue({ TableNames: [] }),
     destroy: vi.fn<() => unknown>().mockReturnValue(undefined),
   };
 }
 
 type ClientFake = ReturnType<typeof createClientFake>;
 
+/**
+ * Creates a ResourceNotFound-shaped SDK error.
+ *
+ * @return Error with the SDK exception name.
+ */
+function resourceNotFound(): Error {
+  return Object.assign(new Error('missing'), {
+    name: 'ResourceNotFoundException',
+  });
+}
+
 describe('DynamoService', () => {
   let service: DynamoService;
   let client: ClientFake;
+  const previousEnv = { ...process.env };
 
   /**
    * Builds a testing module with the mocked DYNAMO_CLIENT.
@@ -50,9 +74,12 @@ describe('DynamoService', () => {
 
   beforeEach(() => {
     client = createClientFake();
+    process.env.DYNAMODB_ENDPOINT = 'https://dynamo.prod.example.com';
+    delete process.env.DYNAMODB_BOOTSTRAP;
   });
 
   afterEach(() => {
+    process.env = { ...previousEnv };
     vi.useRealTimers();
   });
 
@@ -96,6 +123,163 @@ describe('DynamoService', () => {
       await assertion;
 
       expect(client.send).toHaveBeenCalledTimes(10);
+      await module.close();
+    });
+
+    it('skips bootstrap for non-local endpoints', async () => {
+      const module = await compile();
+      service = module.get<DynamoService>(DynamoService);
+
+      await service.onModuleInit();
+
+      expect(client.send).toHaveBeenCalledTimes(1);
+      await module.close();
+    });
+
+    it('creates missing tables and enables TTL on local endpoints', async () => {
+      process.env.DYNAMODB_ENDPOINT = 'http://localhost:8000';
+      const createdTables = new Set<string>();
+      client.send.mockImplementation(async (command: unknown) => {
+        if (command instanceof ListTablesCommand) {
+          return { TableNames: [] };
+        }
+        if (command instanceof DescribeTableCommand) {
+          const tableName = command.input.TableName ?? '';
+          if (createdTables.has(tableName)) {
+            return { Table: { TableName: tableName, TableStatus: 'ACTIVE' } };
+          }
+          throw resourceNotFound();
+        }
+        if (command instanceof CreateTableCommand) {
+          createdTables.add(command.input.TableName ?? '');
+          return {};
+        }
+        if (command instanceof DescribeTimeToLiveCommand) {
+          return {
+            TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+          };
+        }
+        return {};
+      });
+      const module = await compile();
+      service = module.get<DynamoService>(DynamoService);
+
+      await service.onModuleInit();
+
+      const created = client.send.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (command): command is CreateTableCommand =>
+            command instanceof CreateTableCommand,
+        );
+      const ttlUpdates = client.send.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (command): command is UpdateTimeToLiveCommand =>
+            command instanceof UpdateTimeToLiveCommand,
+        );
+      expect(created).toHaveLength(TABLE_DEFINITIONS.length);
+      expect(ttlUpdates).toHaveLength(2);
+      const ttlInputs = ttlUpdates.map((command) => command.input);
+      expect(ttlInputs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            TableName: 'Inbox',
+            TimeToLiveSpecification: {
+              Enabled: true,
+              AttributeName: 'expiresAt',
+            },
+          }),
+          expect.objectContaining({
+            TableName: 'Message',
+            TimeToLiveSpecification: {
+              Enabled: true,
+              AttributeName: 'expiresAt',
+            },
+          }),
+        ]),
+      );
+      await module.close();
+    });
+
+    it('forces bootstrap on non-local endpoints with the flag', async () => {
+      process.env.DYNAMODB_BOOTSTRAP = 'true';
+      client.send.mockImplementation(async (command: unknown) => {
+        if (command instanceof ListTablesCommand) {
+          return { TableNames: [] };
+        }
+        if (command instanceof DescribeTableCommand) {
+          return {
+            Table: {
+              TableName: command.input.TableName,
+              TableStatus: 'ACTIVE',
+            },
+          };
+        }
+        if (command instanceof DescribeTimeToLiveCommand) {
+          return {
+            TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED' },
+          };
+        }
+        return {};
+      });
+      const module = await compile();
+      service = module.get<DynamoService>(DynamoService);
+
+      await service.onModuleInit();
+
+      const describes = client.send.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (command): command is DescribeTableCommand =>
+            command instanceof DescribeTableCommand,
+        );
+      expect(describes.length).toBeGreaterThan(0);
+      await module.close();
+    });
+
+    it('reconciles TTL without recreating existing tables', async () => {
+      process.env.DYNAMODB_ENDPOINT = 'http://localhost:8000';
+      client.send.mockImplementation(async (command: unknown) => {
+        if (command instanceof ListTablesCommand) {
+          return { TableNames: [] };
+        }
+        if (command instanceof DescribeTableCommand) {
+          return {
+            Table: {
+              TableName: command.input.TableName,
+              TableStatus: 'ACTIVE',
+            },
+          };
+        }
+        if (command instanceof DescribeTimeToLiveCommand) {
+          return {
+            TimeToLiveDescription: { TimeToLiveStatus: 'DISABLED' },
+          };
+        }
+        return {};
+      });
+      const module = await compile();
+      service = module.get<DynamoService>(DynamoService);
+
+      await service.onModuleInit();
+
+      const created = client.send.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (command): command is CreateTableCommand =>
+            command instanceof CreateTableCommand,
+        );
+      const ttlUpdates = client.send.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (command): command is UpdateTimeToLiveCommand =>
+            command instanceof UpdateTimeToLiveCommand,
+        );
+      expect(created).toHaveLength(0);
+      expect(ttlUpdates).toHaveLength(2);
+      const ttlTables = ttlUpdates.map((command) => command.input.TableName);
+      expect(ttlTables?.sort()).toEqual(['Inbox', 'Message']);
       await module.close();
     });
   });
