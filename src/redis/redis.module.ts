@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
-import { createClient, type RedisClientType } from 'redis';
-import { REDIS_CLIENT, getRedisConfig } from './redis.constants';
+import type { RedisClientType } from 'redis';
+import { REDIS_CLIENT, createRedisClient } from './redis.constants';
 import { RedisController } from './redis.controller';
 import { RedisService } from './redis.service';
 
@@ -16,19 +16,7 @@ import { RedisService } from './redis.service';
   providers: [
     {
       provide: REDIS_CLIENT,
-      useFactory: (): RedisClientType => {
-        const config = getRedisConfig();
-        return createClient({
-          socket: {
-            host: config.host,
-            port: config.port,
-            reconnectStrategy: (retries: number): number =>
-              Math.min(retries * 100, 5000),
-          },
-          password: config.password,
-          disableOfflineQueue: true,
-        });
-      },
+      useFactory: (): RedisClientType => createRedisClient(),
     },
     RedisService,
   ],

@@ -8,6 +8,7 @@
  * - duplicate: new socket closed, existing session kept
  * - missing params: socket closed with 1008, nothing registered
  * - message: inbound client payload is written to the debug log
+ * - topics: first client subscribes `user:{userId}`, last disconnect unsubscribes
  */
 import { INestApplication, Logger } from '@nestjs/common';
 import { WsAdapter } from '@nestjs/platform-ws';
@@ -18,7 +19,10 @@ import { WebSocket } from 'ws';
 import { AppModule } from './../src/app.module';
 import { DynamoService } from './../src/dynamo/dynamo.service';
 import { RedisService } from './../src/redis/redis.service';
-import { parseClientId, type ClientId } from './../src/ws/session.interface';
+import {
+  channelFor,
+  USER_TOPIC_SUBSCRIBER,
+} from './../src/user-topics/user-topic.service';
 import { WsService } from './../src/ws/ws.service';
 import {
   TEST_JWT_AUDIENCE,
@@ -26,23 +30,11 @@ import {
   signTestToken,
 } from './auth-test.helper';
 import { createDynamoFake } from './dynamo-test.helper';
-
-/**
- * Parses a test `clientId`, failing fast on bad literals.
- *
- * - test-setup helper, literals in this file are always valid
- * - avoids casts while satisfying the branded parameter types.
- *
- * @param value Literal client id used by the test.
- * @return The branded client id.
- */
-function requireClientId(value: string): ClientId {
-  const parsed = parseClientId(value);
-  if (parsed === undefined) {
-    throw new Error(`Invalid test clientId: ${value}`);
-  }
-  return parsed;
-}
+import {
+  createSubscriberFake,
+  type SubscriberFake,
+} from './subscriber-test.helper';
+import { requireClientId, requireUserId } from './ws-test.helper';
 
 /**
  * Builds an authenticated query string for a WS connection.
@@ -67,6 +59,7 @@ function authQuery(
 describe('WsGateway (e2e)', () => {
   let app: INestApplication;
   let wsService: WsService;
+  let subscriberFake: SubscriberFake;
   let baseUrl: string;
   const clients: WebSocket[] = [];
 
@@ -86,6 +79,8 @@ describe('WsGateway (e2e)', () => {
       set: async () => 'OK',
     };
     const dynamoFake = createDynamoFake();
+    const subscriber = createSubscriberFake();
+    subscriberFake = subscriber;
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -93,6 +88,8 @@ describe('WsGateway (e2e)', () => {
       .useValue(redisFake)
       .overrideProvider(DynamoService)
       .useValue(dynamoFake)
+      .overrideProvider(USER_TOPIC_SUBSCRIBER)
+      .useValue(subscriber)
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -330,6 +327,51 @@ describe('WsGateway (e2e)', () => {
         expect(debugSpy).toHaveBeenCalledWith(
           'Message received from user-123 #client-456: hello-e2e-payload',
         );
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it('subscribes on connect and unsubscribes on the last disconnect', async () => {
+    const channel = channelFor(requireUserId('user-123'));
+    const client = await connectClient();
+    await waitForSessionCount(1);
+
+    expect(subscriberFake.subscribe).toHaveBeenCalledWith(
+      channel,
+      expect.any(Function),
+    );
+
+    client.close();
+    await waitForSessionCount(0);
+
+    await vi.waitFor(
+      () => {
+        expect(subscriberFake.unsubscribe).toHaveBeenCalledWith(channel);
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it('shares one subscription across two clients of the same user', async () => {
+    const channel = channelFor(requireUserId('user-123'));
+    const first = await connectClient(authQuery('user-123', 'client-1'));
+    const second = await connectClient(authQuery('user-123', 'client-2'));
+    await waitForSessionCount(2);
+
+    expect(subscriberFake.subscribe).toHaveBeenCalledTimes(1);
+
+    first.close();
+    await waitForSessionCount(1);
+
+    expect(subscriberFake.unsubscribe).not.toHaveBeenCalled();
+
+    second.close();
+    await waitForSessionCount(0);
+
+    await vi.waitFor(
+      () => {
+        expect(subscriberFake.unsubscribe).toHaveBeenCalledWith(channel);
       },
       { timeout: 3000 },
     );

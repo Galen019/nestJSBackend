@@ -4,6 +4,7 @@
  * - mocks `DynamoService.getClient()` with a `send` stub, no AWS calls
  * - connect: puts `User { userId }` and `Clients` concurrently with `expiresAt` and token
  * - disconnect: deletes `Clients { clientId }` conditional on the token
+ * - tracker: fanned-out connect/disconnect delegate without throwing
  * - stale disconnect: a failed token condition resolves without a warn log
  * - failure: Dynamo errors resolve (never reject) with a warn log.
  */
@@ -11,17 +12,12 @@ import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { DeleteItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { requireClientId, requireUserId } from '../../test/ws-test.helper';
 import { DynamoService } from '../dynamo/dynamo.service';
 import {
   CLIENT_PRESENCE_TTL_SECONDS,
   EXPIRING_ITEM_TTL_SECONDS,
 } from '../dynamo/ttl';
-import {
-  parseClientId,
-  parseUserId,
-  type ClientId,
-  type UserId,
-} from '../ws/session.interface';
 import { PresenceService } from './presence.service';
 
 /**
@@ -34,34 +30,6 @@ function createClientFake() {
     .fn<(command: unknown) => Promise<unknown>>()
     .mockResolvedValue({});
   return { send, client: { send } };
-}
-
-/**
- * Parses a test `userId`, failing fast on bad literals.
- *
- * @param value Literal user id used by the test.
- * @return The branded user id.
- */
-function requireUserId(value: string): UserId {
-  const parsed = parseUserId(value);
-  if (parsed === undefined) {
-    throw new Error(`Invalid test userId: ${value}`);
-  }
-  return parsed;
-}
-
-/**
- * Parses a test `clientId`, failing fast on bad literals.
- *
- * @param value Literal client id used by the test.
- * @return The branded client id.
- */
-function requireClientId(value: string): ClientId {
-  const parsed = parseClientId(value);
-  if (parsed === undefined) {
-    throw new Error(`Invalid test clientId: ${value}`);
-  }
-  return parsed;
 }
 
 describe('PresenceService', () => {
@@ -223,5 +191,32 @@ describe('PresenceService', () => {
       service.trackDisconnect(requireClientId('client-456')),
     ).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('disconnect'));
+  });
+
+  it('upserts both rows on a fanned-out connect', async () => {
+    service.handleConnect({
+      userId: requireUserId('user-123'),
+      clientId: requireClientId('client-456'),
+      token: 'presence-token-1',
+      userSessionCount: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[0]?.[0]).toBeInstanceOf(PutItemCommand);
+    expect(send.mock.calls[1]?.[0]).toBeInstanceOf(PutItemCommand);
+  });
+
+  it('deletes the row conditional on the token on a fanned-out disconnect', async () => {
+    service.handleDisconnect({
+      userId: requireUserId('user-123'),
+      clientId: requireClientId('client-456'),
+      token: 'presence-token-1',
+      userSessionCount: 0,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0]).toBeInstanceOf(DeleteItemCommand);
   });
 });
