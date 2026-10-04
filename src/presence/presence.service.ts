@@ -14,6 +14,7 @@
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { DeleteItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { isAwsError } from '../common/aws-error';
 import { DynamoService } from '../dynamo/dynamo.service';
 import { buildExpiresAt, CLIENT_PRESENCE_TTL_SECONDS } from '../dynamo/ttl';
 import type { ClientId, UserId } from '../ws/session.interface';
@@ -39,12 +40,13 @@ export class PresenceService {
   /**
    * Records a newly registered connection in DynamoDB.
    *
-   * - upserts `User { userId }` unconditionally (permanent registry)
-   * - upserts `Clients { clientId, userId, expiresAt, presenceToken }`
-   *   unconditionally, `expiresAt` is now plus the 1-day presence lifetime
-   *   in epoch seconds; the token lets the matching disconnect delete
-   *   conditionally so stale closes cannot remove reconnected rows
-   * - logs and swallows Dynamo failures so callers can fire-and-forget.
+   * - upserts `User { userId }` (permanent registry) and
+   *   `Clients { clientId, userId, expiresAt, presenceToken }` concurrently;
+   *   `expiresAt` is now plus the 1-day presence lifetime in epoch seconds
+   * - the token lets the matching disconnect delete conditionally so stale
+   *   closes cannot remove reconnected rows
+   * - both writes are attempted even when one fails, then failures are
+   *   logged and swallowed so callers can fire-and-forget.
    *
    * @param userId Owner of the connection.
    * @param clientId Unique session key that connected.
@@ -59,23 +61,25 @@ export class PresenceService {
     try {
       const client = this.dynamo.getClient();
       const expiresAt = buildExpiresAt(CLIENT_PRESENCE_TTL_SECONDS);
-      await client.send(
-        new PutItemCommand({
-          TableName: 'User',
-          Item: { userId: { S: userId } },
-        }),
-      );
-      await client.send(
-        new PutItemCommand({
-          TableName: 'Clients',
-          Item: {
-            clientId: { S: clientId },
-            userId: { S: userId },
-            expiresAt: { N: String(expiresAt) },
-            presenceToken: { S: presenceToken },
-          },
-        }),
-      );
+      await Promise.all([
+        client.send(
+          new PutItemCommand({
+            TableName: 'User',
+            Item: { userId: { S: userId } },
+          }),
+        ),
+        client.send(
+          new PutItemCommand({
+            TableName: 'Clients',
+            Item: {
+              clientId: { S: clientId },
+              userId: { S: userId },
+              expiresAt: { N: String(expiresAt) },
+              presenceToken: { S: presenceToken },
+            },
+          }),
+        ),
+      ]);
     } catch (err: unknown) {
       const detail = err instanceof Error ? err.message : 'unknown error';
       this.logger.warn(`Failed to track connect: ${detail} ${clientId}`);
@@ -122,7 +126,10 @@ export class PresenceService {
         }),
       );
     } catch (err: unknown) {
-      if (presenceToken !== undefined && isConditionalCheckFailed(err)) {
+      if (
+        presenceToken !== undefined &&
+        isAwsError(err, 'ConditionalCheckFailedException')
+      ) {
         this.logger.log(
           `Ignoring stale disconnect for ${clientId}: presence row was reconnected`,
         );
@@ -132,24 +139,4 @@ export class PresenceService {
       this.logger.warn(`Failed to track disconnect: ${detail} ${clientId}`);
     }
   }
-}
-
-/**
- * Checks whether an SDK error is a failed delete condition.
- *
- * - matches `ConditionalCheckFailedException` by `name` or `code` because
- *   SDK faults vary by path; non-object failures never match.
- *
- * @param err Unknown client failure.
- * @return True when the error is a failed condition check.
- */
-function isConditionalCheckFailed(err: unknown): boolean {
-  if (typeof err !== 'object' || err === null) {
-    return false;
-  }
-  const record = err as { name?: unknown; code?: unknown };
-  return (
-    record.name === 'ConditionalCheckFailedException' ||
-    record.code === 'ConditionalCheckFailedException'
-  );
 }

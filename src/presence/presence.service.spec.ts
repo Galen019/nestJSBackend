@@ -2,7 +2,7 @@
  * Unit suite for PresenceService with a mocked DynamoService client.
  *
  * - mocks `DynamoService.getClient()` with a `send` stub, no AWS calls
- * - connect: puts `User { userId }` then `Clients` with `expiresAt` and token
+ * - connect: puts `User { userId }` and `Clients` concurrently with `expiresAt` and token
  * - disconnect: deletes `Clients { clientId }` conditional on the token
  * - stale disconnect: a failed token condition resolves without a warn log
  * - failure: Dynamo errors resolve (never reject) with a warn log.
@@ -99,7 +99,7 @@ describe('PresenceService', () => {
     vi.restoreAllMocks();
   });
 
-  it('puts User then Clients rows with a 1-day expiresAt on connect', async () => {
+  it('puts User and Clients rows with a 1-day expiresAt on connect', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -132,6 +132,24 @@ describe('PresenceService', () => {
       },
     });
     expect(CLIENT_PRESENCE_TTL_SECONDS).not.toBe(EXPIRING_ITEM_TTL_SECONDS);
+  });
+
+  it('attempts both rows even when one connect write fails', async () => {
+    send.mockRejectedValueOnce(new Error('user write down'));
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      service.trackConnect(
+        requireUserId('user-123'),
+        requireClientId('client-456'),
+        'presence-token-1',
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('connect'));
   });
 
   it('deletes the Clients row conditional on the presence token', async () => {

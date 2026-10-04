@@ -3,7 +3,7 @@
  *
  * - Protects all HTTP routes by default, `@Public()` opts out
  * - Verifies `Authorization: Bearer <jwt>` via JwtVerifierService
- * - Non-HTTP contexts (WS, gRPC) pass through; they enforce auth themselves.
+ * - Non-HTTP contexts (WS) pass through; WS enforces auth itself.
  */
 import {
   CanActivate,
@@ -79,7 +79,7 @@ export class JwtAuthGuard implements CanActivate {
   /**
    * Decides whether the current request may proceed.
    *
-   * - bypasses `@Public()` handlers/classes and WS/gRPC contexts
+   * - bypasses `@Public()` handlers/classes and WS contexts
    * - verifies the Bearer token and stores claims on the request.
    *
    * @param context Execution context for the incoming request.
