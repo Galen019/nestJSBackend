@@ -1,13 +1,17 @@
 /**
- * In-memory WebSocket session registry.
+ * In-memory WebSocket session registry with DynamoDB presence tracking.
  *
  * - Owns the `sessions` map keyed by branded `ClientId`
  * - Handles duplicate policy, lifecycle cleanup, and sends
- *   the serialized payload size via the `bytes` field below.
+ *   the serialized payload size via the `bytes` field below
+ * - Delegates presence to `PresenceService` best-effort: registered connects
+ *   upsert `User`/`Clients` rows, socket close deletes the `Clients` row.
  */
 
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
+import { PresenceService } from '../presence/presence.service';
 import type { ClientId, ConnectionParams, Session } from './session.interface';
 
 /** Close code for policy violations (missing params, duplicate clientId). */
@@ -44,8 +48,14 @@ export interface FanOutResult {
  *
  * - Trusts branded ids, they were validated once at the boundary
  * - Duplicate policy: reject the NEW connection, keep the existing session
- * - Each registration closes over its `ClientId`, so the socket removes its own
- *   session on `close` with no reverse lookup structure.
+ * - Each registration closes over its session, so the socket removes its own
+ *   entry on `close` with no reverse lookup structure
+ * - Presence writes happen only on `registered`; `duplicate`/`rejected` do
+ *   zero Dynamo I/O so refused connections never refresh presence rows
+ * - Each session mints a `presenceToken` mirrored into its presence row;
+ *   the close handler deletes conditionally on that token, so a slow
+ *   disconnect landing after a fast reconnect on the same `clientId`
+ *   cannot remove the fresh row.
  */
 @Injectable()
 export class WsService {
@@ -53,14 +63,25 @@ export class WsService {
   private readonly sessions = new Map<ClientId, Session>();
 
   /**
+   * Creates the registry with its presence writer.
+   *
+   * @param presence Best-effort DynamoDB writer for `User`/`Clients` rows.
+   */
+  constructor(private readonly presence: PresenceService) {}
+
+  /**
    * Registers a new connection as a session.
    *
    * - closes with 1008 when `userId`/`clientId` are undefined
    * - closes the NEW socket with 1008 when `clientId` already exists, old kept
    * - otherwise stores `{ sequenceNumber: 0, heartbeatAt: Date.now() }`
+   *   with a fresh `presenceToken` for the conditional presence delete
+   * - fire-and-forget presence upsert after registration; Dynamo failures
+   *   never block the socket because `PresenceService` swallows them
    * - attaches `message`/`error` listeners for lifecycle coverage, plus a
-   *   `close` listener that removes the session, so disconnected clients
-   *   never linger.
+   *   `close` listener that removes the session and conditionally deletes the
+   *   presence row by token, so disconnected clients never linger while
+   *   stale closes never remove a reconnected row.
    *
    * @param params Connection socket plus boundary-parsed ids.
    * @return Discriminated outcome of the registration attempt.
@@ -83,8 +104,10 @@ export class WsService {
       socket,
       sequenceNumber: 0,
       heartbeatAt: Date.now(),
+      presenceToken: randomUUID(),
     };
     this.sessions.set(clientId, session);
+    void this.presence.trackConnect(userId, clientId, session.presenceToken);
     socket.on('message', (data: unknown) => {
       this.handleMessage(clientId, data);
     });
@@ -93,6 +116,7 @@ export class WsService {
     });
     socket.on('close', () => {
       this.sessions.delete(clientId);
+      void this.presence.trackDisconnect(clientId, session.presenceToken);
       this.logger.log('Client disconnected', clientId);
     });
     this.logger.log('Client connected', clientId);

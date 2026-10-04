@@ -2,7 +2,7 @@
  * Test suite for static DynamoDB table definitions.
  *
  * - guards the seven-table contract, key schemas, and GSI shapes
- * - asserts PAY_PER_REQUEST billing and TTL attachment for Inbox/Message only.
+ * - asserts PAY_PER_REQUEST billing and TTL attachment for Inbox/Message/Clients.
  */
 import { describe, it, expect } from 'vitest';
 import type { GlobalSecondaryIndex } from '@aws-sdk/client-dynamodb';
@@ -114,13 +114,14 @@ describe('table-defs', () => {
     expect(attrs.timestamp).toBe('N');
   });
 
-  it('attaches TTL only to Inbox and Message via expiresAt', () => {
+  it('attaches TTL to Inbox, Message, and Clients via expiresAt', () => {
     const byName = Object.fromEntries(
       TABLE_DEFINITIONS.map((table) => [table.create.TableName, table]),
     );
     expect(byName.Inbox.ttlAttribute).toBe(TTL_ATTRIBUTE_NAME);
     expect(byName.Message.ttlAttribute).toBe(TTL_ATTRIBUTE_NAME);
-    for (const name of ['User', 'Clients', 'LastSeen', 'Chat', 'Member']) {
+    expect(byName.Clients.ttlAttribute).toBe(TTL_ATTRIBUTE_NAME);
+    for (const name of ['User', 'LastSeen', 'Chat', 'Member']) {
       expect(byName[name].ttlAttribute).toBeUndefined();
     }
   });

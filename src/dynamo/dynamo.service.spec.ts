@@ -3,11 +3,13 @@
  *
  * - onModuleInit: connects without retry, retries then connects, exhausts
  * - bootstrap gate: skips non-local endpoints, creates on local, forces via flag
- * - TTL: enables disabled TTL, skips already-enabled TTL
+ * - bootstrap failure: fail-open boot with an error log, never rejects
+ * - TTL: enables disabled TTL, corrects a wrong attribute, skips matching TTL
  * - ping: delegates to ListTables, propagates errors
  * - onModuleDestroy: destroys the client
  * - getClient: returns the injected client
  */
+import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
@@ -179,10 +181,17 @@ describe('DynamoService', () => {
             command instanceof UpdateTimeToLiveCommand,
         );
       expect(created).toHaveLength(TABLE_DEFINITIONS.length);
-      expect(ttlUpdates).toHaveLength(2);
+      expect(ttlUpdates).toHaveLength(3);
       const ttlInputs = ttlUpdates.map((command) => command.input);
       expect(ttlInputs).toEqual(
         expect.arrayContaining([
+          expect.objectContaining({
+            TableName: 'Clients',
+            TimeToLiveSpecification: {
+              Enabled: true,
+              AttributeName: 'expiresAt',
+            },
+          }),
           expect.objectContaining({
             TableName: 'Inbox',
             TimeToLiveSpecification: {
@@ -218,7 +227,10 @@ describe('DynamoService', () => {
         }
         if (command instanceof DescribeTimeToLiveCommand) {
           return {
-            TimeToLiveDescription: { TimeToLiveStatus: 'ENABLED' },
+            TimeToLiveDescription: {
+              TimeToLiveStatus: 'ENABLED',
+              AttributeName: 'expiresAt',
+            },
           };
         }
         return {};
@@ -235,6 +247,82 @@ describe('DynamoService', () => {
             command instanceof DescribeTableCommand,
         );
       expect(describes.length).toBeGreaterThan(0);
+      const ttlUpdates = client.send.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (command): command is UpdateTimeToLiveCommand =>
+            command instanceof UpdateTimeToLiveCommand,
+        );
+      expect(ttlUpdates).toHaveLength(0);
+      await module.close();
+    });
+
+    it('corrects TTL when enabled with the wrong attribute', async () => {
+      process.env.DYNAMODB_ENDPOINT = 'http://localhost:8000';
+      client.send.mockImplementation(async (command: unknown) => {
+        if (command instanceof ListTablesCommand) {
+          return { TableNames: [] };
+        }
+        if (command instanceof DescribeTableCommand) {
+          return {
+            Table: {
+              TableName: command.input.TableName,
+              TableStatus: 'ACTIVE',
+            },
+          };
+        }
+        if (command instanceof DescribeTimeToLiveCommand) {
+          return {
+            TimeToLiveDescription: {
+              TimeToLiveStatus: 'ENABLED',
+              AttributeName: 'ttl',
+            },
+          };
+        }
+        return {};
+      });
+      const module = await compile();
+      service = module.get<DynamoService>(DynamoService);
+
+      await service.onModuleInit();
+
+      const ttlUpdates = client.send.mock.calls
+        .map((call) => call[0])
+        .filter(
+          (command): command is UpdateTimeToLiveCommand =>
+            command instanceof UpdateTimeToLiveCommand,
+        );
+      expect(ttlUpdates).toHaveLength(3);
+      for (const update of ttlUpdates) {
+        expect(update.input.TimeToLiveSpecification).toEqual({
+          Enabled: true,
+          AttributeName: 'expiresAt',
+        });
+      }
+      await module.close();
+    });
+
+    it('continues boot with an error log when bootstrap fails', async () => {
+      process.env.DYNAMODB_ENDPOINT = 'http://localhost:8000';
+      client.send.mockImplementation(async (command: unknown) => {
+        if (command instanceof ListTablesCommand) {
+          return { TableNames: [] };
+        }
+        throw Object.assign(new Error('access denied'), {
+          name: 'AccessDeniedException',
+        });
+      });
+      const errorSpy = vi
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      const module = await compile();
+      service = module.get<DynamoService>(DynamoService);
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('continuing without ensured tables'),
+      );
       await module.close();
     });
 
@@ -277,9 +365,9 @@ describe('DynamoService', () => {
             command instanceof UpdateTimeToLiveCommand,
         );
       expect(created).toHaveLength(0);
-      expect(ttlUpdates).toHaveLength(2);
+      expect(ttlUpdates).toHaveLength(3);
       const ttlTables = ttlUpdates.map((command) => command.input.TableName);
-      expect(ttlTables?.sort()).toEqual(['Inbox', 'Message']);
+      expect(ttlTables?.sort()).toEqual(['Clients', 'Inbox', 'Message']);
       await module.close();
     });
   });

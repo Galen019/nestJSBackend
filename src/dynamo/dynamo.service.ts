@@ -3,6 +3,13 @@
  *
  * - connects on module init by listing tables with bounded retries
  * - ensures ephemeral local tables from static definitions when gated on
+ * - table bootstrap is fail-open: failures are logged loudly and boot
+ *   continues, because presence writes are best-effort and the app can
+ *   serve without ensured tables
+ * - bootstrap needs `dynamodb:CreateTable`, `dynamodb:DescribeTable`,
+ *   `dynamodb:DescribeTimeToLive`, and `dynamodb:UpdateTimeToLive` on the
+ *   configured endpoint; without them bootstrap is skipped with an error
+ *   log while reads/writes degrade to warn-and-swallow
  * - exposes `ping()`/`getClient()` for health checks and future domains.
  */
 import {
@@ -51,9 +58,14 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
    *   `service_started`); the SDK's own per-request retries still cover
    *   transient failures inside each attempt
    * - skips table creation for non-local endpoints unless forced
-   * - throws the last error when all attempts fail.
+   * - ping failures still throw (readiness); bootstrap failures are fail-open:
+   *   logged loudly via `error` and boot continues, since presence writes
+   *   are best-effort and must never brick the app when IAM lacks the table
+   *   admin actions (`CreateTable`, `DescribeTable`, `DescribeTimeToLive`,
+   *   `UpdateTimeToLive`)
+   * - throws the last ping error when all connect attempts fail.
    *
-   * @return Resolves when DynamoDB answers and tables are ensured.
+   * @return Resolves when DynamoDB answers, with tables ensured best-effort.
    */
   async onModuleInit(): Promise<void> {
     await withBoundedRetry(() => this.ping(), {
@@ -71,7 +83,16 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
       );
       return;
     }
-    await this.ensureTablesExist();
+    try {
+      await this.ensureTablesExist();
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : 'unknown error';
+      this.logger.error(
+        `DynamoDB table bootstrap failed, continuing without ensured tables: ${detail}. ` +
+          `Bootstrap requires dynamodb:CreateTable, dynamodb:DescribeTable, ` +
+          `dynamodb:DescribeTimeToLive, and dynamodb:UpdateTimeToLive on the configured endpoint.`,
+      );
+    }
   }
 
   /**
@@ -193,12 +214,14 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
   /**
    * Ensures TTL is enabled for a table with the desired attribute.
    *
-   * - no-ops when TTL is already ENABLED or ENABLING
-   * - enables via UpdateTimeToLive otherwise.
+   * - no-ops only when TTL is already ENABLED or ENABLING with the matching
+   *   attribute; a differently-named attribute would leave app writes
+   *   (`expiresAt`) unexpired, so it is corrected, not accepted
+   * - enables via UpdateTimeToLive otherwise, logging the reconciliation.
    *
    * @param tableName Table to reconcile.
    * @param attributeName TTL attribute holding epoch seconds.
-   * @return Resolves when TTL is enabled.
+   * @return Resolves when TTL is enabled with the desired attribute.
    */
   private async ensureTtl(
     tableName: string,
@@ -207,9 +230,22 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
     const described = await this.client.send(
       new DescribeTimeToLiveCommand({ TableName: tableName }),
     );
-    const status = described.TimeToLiveDescription?.TimeToLiveStatus;
-    if (status === 'ENABLED' || status === 'ENABLING') {
+    const description = described.TimeToLiveDescription;
+    const status = description?.TimeToLiveStatus;
+    if (
+      (status === 'ENABLED' || status === 'ENABLING') &&
+      description?.AttributeName === attributeName
+    ) {
       return;
+    }
+    if (status === 'ENABLED' || status === 'ENABLING') {
+      this.logger.warn(
+        `DynamoDB table ${tableName} TTL uses attribute ${description?.AttributeName ?? 'unknown'}, reconciling to ${attributeName}`,
+      );
+    } else {
+      this.logger.log(
+        `Enabling DynamoDB TTL on table ${tableName} with attribute ${attributeName}`,
+      );
     }
     await this.client.send(
       new UpdateTimeToLiveCommand({
