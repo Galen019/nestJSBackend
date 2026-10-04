@@ -2,10 +2,10 @@
  * Unit suite for WsService with structurally-typed socket fakes.
  *
  * - connect: session added with userId/clientId/socket/presenceToken
- * - presence: trackConnect on registered only with a per-connection token, never on duplicate/rejected
+ * - trackers: registered fans out connect with the token and user total, never on duplicate/rejected
  * - lookup: getSession returns the entry, getSessionCount tracks active sessions
  * - send: routes JSON through the right socket, false for unknown/closed clients
- * - close: the registration close listener removes the session and deletes presence by token
+ * - close: the registration close listener removes the session and fans out disconnect by token
  * - duplicate: new socket closed with 1008, existing session kept
  * - message: inbound payload is forwarded to the debug log without side effects
  */
@@ -13,11 +13,12 @@ import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import { PresenceService } from '../presence/presence.service';
+import { requireClientId } from '../../test/ws-test.helper';
 import {
   parseClientId,
   parseUserId,
-  type ClientId,
+  SESSION_TRACKERS,
+  type SessionLifecycleEvent,
   type SessionSocket,
 } from './session.interface';
 import { WS_CLOSE_POLICY_VIOLATION, WsService } from './ws.service';
@@ -92,46 +93,34 @@ function fireMessage(
   messageCall[1](payload);
 }
 
-/**
- * Parses a test `clientId`, failing fast on bad literals.
- *
- * - test-setup helper, literals in this file are always valid
- * - avoids casts while satisfying the branded parameter types.
- *
- * @param value Literal client id used by the test.
- * @return The branded client id.
- */
-function requireClientId(value: string): ClientId {
-  const parsed = parseClientId(value);
-  if (parsed === undefined) {
-    throw new Error(`Invalid test clientId: ${value}`);
-  }
-  return parsed;
-}
-
 describe('WsService', () => {
   let service: WsService;
   let module: TestingModule | undefined;
-  let presence: {
-    trackConnect: ReturnType<typeof vi.fn>;
-    trackDisconnect: ReturnType<typeof vi.fn>;
+  let tracker: {
+    handleConnect: ReturnType<
+      typeof vi.fn<(event: SessionLifecycleEvent) => void>
+    >;
+    handleDisconnect: ReturnType<
+      typeof vi.fn<(event: SessionLifecycleEvent) => void>
+    >;
   };
 
   /**
    * Builds a testing module with a fresh WsService.
    *
-   * - provides a mocked PresenceService so no Dynamo calls happen
+   * - provides a mocked tracker list so no presence or Redis calls happen
    * - tracks the module so it can be closed after each test.
    */
   async function compile(): Promise<WsService> {
-    presence = {
-      trackConnect: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
-      trackDisconnect: vi
-        .fn<() => Promise<void>>()
-        .mockResolvedValue(undefined),
+    tracker = {
+      handleConnect: vi.fn<(event: SessionLifecycleEvent) => void>(),
+      handleDisconnect: vi.fn<(event: SessionLifecycleEvent) => void>(),
     };
     module = await Test.createTestingModule({
-      providers: [WsService, { provide: PresenceService, useValue: presence }],
+      providers: [
+        WsService,
+        { provide: SESSION_TRACKERS, useValue: [tracker] },
+      ],
     }).compile();
     return module.get<WsService>(WsService);
   }
@@ -456,7 +445,7 @@ describe('WsService', () => {
     expect(mocks.send).not.toHaveBeenCalled();
   });
 
-  it('tracks presence on registered connections', () => {
+  it('fans out connect with the token and a user total of 1', () => {
     const { socket } = createSocketFake();
 
     service.handleConnection({
@@ -465,21 +454,22 @@ describe('WsService', () => {
       clientId: parseClientId('client-456'),
     });
 
-    expect(presence.trackConnect).toHaveBeenCalledTimes(1);
-    expect(presence.trackConnect).toHaveBeenCalledWith(
-      'user-123',
-      'client-456',
-      expect.any(String),
-    );
-    const token = presence.trackConnect.mock.calls[0]?.[2] as unknown;
-    expect(typeof token).toBe('string');
-    expect((token as string).length).toBeGreaterThan(0);
+    expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
+    expect(tracker.handleConnect).toHaveBeenCalledWith({
+      userId: 'user-123',
+      clientId: 'client-456',
+      token: expect.any(String),
+      userSessionCount: 1,
+    });
+    const event = tracker.handleConnect.mock.calls[0]?.[0];
+    expect(typeof event?.token).toBe('string');
+    expect((event?.token as string).length).toBeGreaterThan(0);
     expect(
       service.getSession(requireClientId('client-456'))?.presenceToken,
-    ).toBe(token);
+    ).toBe(event?.token);
   });
 
-  it('mints a unique presence token per connection', () => {
+  it('mints a unique token per connection', () => {
     const first = createSocketFake();
     const second = createSocketFake();
     service.handleConnection({
@@ -493,14 +483,74 @@ describe('WsService', () => {
       clientId: parseClientId('client-789'),
     });
 
-    const tokens = presence.trackConnect.mock.calls.map(
-      (call) => call[2] as unknown as string,
+    const tokens = tracker.handleConnect.mock.calls.map(
+      (call) => call[0].token,
     );
     expect(tokens).toHaveLength(2);
     expect(tokens[0]).not.toBe(tokens[1]);
   });
 
-  it('skips presence writes on duplicate clientId', () => {
+  it('reports the user total per connect and the remainder per disconnect', () => {
+    const first = createSocketFake();
+    const second = createSocketFake();
+    service.handleConnection({
+      socket: first.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-1'),
+    });
+    service.handleConnection({
+      socket: second.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-2'),
+    });
+
+    expect(tracker.handleConnect).toHaveBeenCalledTimes(2);
+    expect(tracker.handleConnect).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ userSessionCount: 2 }),
+    );
+
+    fireClose(first);
+
+    expect(tracker.handleDisconnect).toHaveBeenCalledTimes(1);
+    expect(tracker.handleDisconnect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-123',
+        clientId: 'client-1',
+        userSessionCount: 1,
+      }),
+    );
+
+    fireClose(second);
+
+    expect(tracker.handleDisconnect).toHaveBeenCalledTimes(2);
+    expect(tracker.handleDisconnect).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ userSessionCount: 0 }),
+    );
+  });
+
+  it('fans out disconnect with the session token', () => {
+    const fake = createSocketFake();
+    service.handleConnection({
+      socket: fake.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+    const token = tracker.handleConnect.mock.calls[0]?.[0].token;
+
+    fireClose(fake);
+
+    expect(tracker.handleDisconnect).toHaveBeenCalledTimes(1);
+    expect(tracker.handleDisconnect).toHaveBeenCalledWith({
+      userId: 'user-123',
+      clientId: 'client-456',
+      token,
+      userSessionCount: 0,
+    });
+  });
+
+  it('never notifies trackers on duplicate clientId', () => {
     const oldClient = createSocketFake();
     const newClient = createSocketFake();
     service.handleConnection({
@@ -508,7 +558,7 @@ describe('WsService', () => {
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
     });
-    presence.trackConnect.mockClear();
+    tracker.handleConnect.mockClear();
 
     service.handleConnection({
       socket: newClient.socket,
@@ -516,10 +566,11 @@ describe('WsService', () => {
       clientId: parseClientId('client-456'),
     });
 
-    expect(presence.trackConnect).not.toHaveBeenCalled();
+    expect(tracker.handleConnect).not.toHaveBeenCalled();
+    expect(tracker.handleDisconnect).not.toHaveBeenCalled();
   });
 
-  it('skips presence writes on rejected connections', () => {
+  it('never notifies trackers on rejected connections', () => {
     const { socket } = createSocketFake();
 
     service.handleConnection({
@@ -528,21 +579,7 @@ describe('WsService', () => {
       clientId: undefined,
     });
 
-    expect(presence.trackConnect).not.toHaveBeenCalled();
-  });
-
-  it('deletes presence by token when the socket closes', () => {
-    const fake = createSocketFake();
-    service.handleConnection({
-      socket: fake.socket,
-      userId: parseUserId('user-123'),
-      clientId: parseClientId('client-456'),
-    });
-    const token = presence.trackConnect.mock.calls[0]?.[2];
-
-    fireClose(fake);
-
-    expect(presence.trackDisconnect).toHaveBeenCalledTimes(1);
-    expect(presence.trackDisconnect).toHaveBeenCalledWith('client-456', token);
+    expect(tracker.handleConnect).not.toHaveBeenCalled();
+    expect(tracker.handleDisconnect).not.toHaveBeenCalled();
   });
 });

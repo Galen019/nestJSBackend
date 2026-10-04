@@ -17,17 +17,23 @@ import { DeleteItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
 import { isAwsError } from '../common/aws-error';
 import { DynamoService } from '../dynamo/dynamo.service';
 import { buildExpiresAt, CLIENT_PRESENCE_TTL_SECONDS } from '../dynamo/ttl';
-import type { ClientId, UserId } from '../ws/session.interface';
+import type {
+  ClientId,
+  SessionLifecycleEvent,
+  SessionTracker,
+  UserId,
+} from '../ws/session.interface';
 
 /**
  * Writes WS presence to the `User` and `Clients` tables, best-effort.
  *
  * - `trackConnect` upserts both rows; `trackDisconnect` removes the client row
  * - disconnects are conditional on the connect-time token when provided
- * - both resolve even when Dynamo is unreachable.
+ * - both resolve even when Dynamo is unreachable
+ * - implements `SessionTracker` so `WsService` fans lifecycle out to it.
  */
 @Injectable()
-export class PresenceService {
+export class PresenceService implements SessionTracker {
   private readonly logger = new Logger(PresenceService.name);
 
   /**
@@ -36,6 +42,28 @@ export class PresenceService {
    * @param dynamo Lifecycle wrapper exposing the shared DynamoDB client.
    */
   constructor(private readonly dynamo: DynamoService) {}
+
+  /**
+   * Records a fanned-out session connect in DynamoDB.
+   *
+   * - delegates to `trackConnect` fire-and-forget, never throws or blocks.
+   *
+   * @param event Session identity for the new connection.
+   */
+  handleConnect(event: SessionLifecycleEvent): void {
+    void this.trackConnect(event.userId, event.clientId, event.token);
+  }
+
+  /**
+   * Removes a fanned-out session disconnect from DynamoDB.
+   *
+   * - delegates to `trackDisconnect` fire-and-forget, never throws or blocks.
+   *
+   * @param event Session identity for the closed connection.
+   */
+  handleDisconnect(event: SessionLifecycleEvent): void {
+    void this.trackDisconnect(event.clientId, event.token);
+  }
 
   /**
    * Records a newly registered connection in DynamoDB.

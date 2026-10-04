@@ -1,5 +1,5 @@
 /**
- * E2E suite for HTTP routes with mocked RedisService/DynamoService and JWT auth.
+ * E2E suite for HTTP routes with mocked RedisService/DynamoService/subscriber and JWT auth.
  *
  * - registers WsAdapter so the `/ws` gateway boots alongside HTTP routes
  * - JWT: test code signs RS256 tokens, API verifies iss/aud/exp via global guard
@@ -22,6 +22,7 @@ import { createGlobalValidationPipe } from './../src/app.pipes';
 import { DynamoService } from './../src/dynamo/dynamo.service';
 import { DEFAULT_SET_TTL_SECONDS } from './../src/redis/redis.constants';
 import { RedisService, type RedisEntry } from './../src/redis/redis.service';
+import { USER_TOPIC_SUBSCRIBER } from './../src/user-topics/user-topic.service';
 import {
   TEST_JWT_AUDIENCE,
   TEST_JWT_ISSUER,
@@ -29,6 +30,7 @@ import {
   signTestToken,
 } from './auth-test.helper';
 import { createDynamoFake, type DynamoFake } from './dynamo-test.helper';
+import { createSubscriberFake } from './subscriber-test.helper';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -66,6 +68,7 @@ describe('AppController (e2e)', () => {
         ) => Promise<string | null>
       >(),
     };
+    const subscriberFake = createSubscriberFake();
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -73,6 +76,8 @@ describe('AppController (e2e)', () => {
       .useValue(redisFake)
       .overrideProvider(DynamoService)
       .useValue(dynamoFake)
+      .overrideProvider(USER_TOPIC_SUBSCRIBER)
+      .useValue(subscriberFake)
       .compile();
 
     app = moduleFixture.createNestApplication();

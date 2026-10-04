@@ -12,7 +12,11 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import type { RedisClientType, SetOptions } from 'redis';
-import { withBoundedRetry } from '../common/retry';
+import {
+  attachRedisErrorHandler,
+  connectRedisClient,
+  quitRedisClient,
+} from './redis.lifecycle';
 import { REDIS_CLIENT } from './redis.constants';
 
 export interface RedisEntry {
@@ -31,7 +35,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
 
   constructor(@Inject(REDIS_CLIENT) private readonly client: RedisClientType) {
-    this.client.on('error', (err: Error) => {
+    attachRedisErrorHandler(this.client, (err: Error) => {
       this.logger.error(`Redis client error: ${err.message}`);
     });
   }
@@ -39,19 +43,20 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   /**
    * Connects to Redis on module init with bounded exponential-backoff retries.
    *
-   * - delegates the retry policy to the shared `withBoundedRetry` helper
-   * - throws the last error when all attempts fail.
+   * - delegates to the shared lifecycle helper, throws when attempts fail.
    */
   async onModuleInit(): Promise<void> {
-    await withBoundedRetry(() => this.client.connect(), {
-      failureMessage: 'Failed to connect to Redis after 10 attempts',
-    });
+    await connectRedisClient(
+      this.client,
+      'Failed to connect to Redis after 10 attempts',
+    );
   }
 
+  /**
+   * Quits the Redis client gracefully on module destroy when open.
+   */
   async onModuleDestroy(): Promise<void> {
-    if (this.client.isOpen) {
-      await this.client.quit();
-    }
+    await quitRedisClient(this.client);
   }
 
   async ping(): Promise<string> {
