@@ -1,7 +1,7 @@
 /**
  * Unit suite for WsService with structurally-typed socket fakes.
  *
- * - connect: session added with userId/clientId/socket/sequenceNumber/heartbeatAt/presenceToken
+ * - connect: session added with userId/clientId/socket/presenceToken
  * - presence: trackConnect on registered only with a per-connection token, never on duplicate/rejected
  * - lookup: getSession returns the entry, getSessionCount tracks active sessions
  * - send: routes JSON through the right socket, false for unknown/closed clients
@@ -159,9 +159,8 @@ describe('WsService', () => {
     expect(service.getSessionCount()).toBe(1);
   });
 
-  it('stores the correct userId, clientId, socket, sequenceNumber, and heartbeatAt', () => {
+  it('stores the correct userId, clientId, socket, and presenceToken', () => {
     const { socket } = createSocketFake();
-    const before = Date.now();
 
     service.handleConnection({
       socket,
@@ -176,9 +175,8 @@ describe('WsService', () => {
     expect(session.userId).toBe('user-123');
     expect(session.clientId).toBe('client-456');
     expect(session.socket).toBe(socket);
-    expect(session.sequenceNumber).toBe(0);
-    expect(session.heartbeatAt).toBeGreaterThanOrEqual(before);
-    expect(session.heartbeatAt).toBeLessThanOrEqual(Date.now());
+    expect(typeof session.presenceToken).toBe('string');
+    expect(session.presenceToken.length).toBeGreaterThan(0);
   });
 
   it('attaches message, error, and close listeners on connect', () => {
@@ -442,68 +440,20 @@ describe('WsService', () => {
     expect(typeof logged === 'string' ? logged.length : 0).toBeLessThan(2000);
   });
 
-  it('fans out to many clients and counts sent vs skipped', () => {
-    const first = createSocketFake();
-    const second = createSocketFake();
+  it('drops unserializable payloads without sending', () => {
+    const { socket, mocks } = createSocketFake();
     service.handleConnection({
-      socket: first.socket,
+      socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
     });
-    service.handleConnection({
-      socket: second.socket,
-      userId: parseUserId('user-2'),
-      clientId: parseClientId('client-2'),
-    });
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
 
-    const result = service.sendToClients(
-      [
-        requireClientId('client-1'),
-        requireClientId('client-2'),
-        requireClientId('ghost'),
-      ],
-      { type: 'MESSAGE', data: 'hi' },
+    expect(service.sendToClient(requireClientId('client-1'), circular)).toBe(
+      false,
     );
-
-    expect(result).toEqual({
-      sent: 2,
-      skipped: 1,
-      bytes: Buffer.byteLength(
-        JSON.stringify({ type: 'MESSAGE', data: 'hi' }),
-        'utf8',
-      ),
-    });
-    expect(first.mocks.send).toHaveBeenCalledTimes(1);
-    expect(second.mocks.send).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips closed sockets when fanning out', () => {
-    const openClient = createSocketFake();
-    const closedFake = createSocketFake();
-    closedFake.socket.readyState = WebSocket.CLOSED;
-    service.handleConnection({
-      socket: openClient.socket,
-      userId: parseUserId('user-1'),
-      clientId: parseClientId('client-1'),
-    });
-    service.handleConnection({
-      socket: closedFake.socket,
-      userId: parseUserId('user-2'),
-      clientId: parseClientId('client-2'),
-    });
-
-    const result = service.sendToClients(
-      [requireClientId('client-1'), requireClientId('client-2')],
-      { type: 'PING' },
-    );
-
-    expect(result).toEqual({
-      sent: 1,
-      skipped: 1,
-      bytes: Buffer.byteLength(JSON.stringify({ type: 'PING' }), 'utf8'),
-    });
-    expect(openClient.mocks.send).toHaveBeenCalledTimes(1);
-    expect(closedFake.mocks.send).not.toHaveBeenCalled();
+    expect(mocks.send).not.toHaveBeenCalled();
   });
 
   it('tracks presence on registered connections', () => {

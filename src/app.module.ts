@@ -4,12 +4,11 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { DynamoModule } from './dynamo/dynamo.module';
 import { HealthController } from './health/health.controller';
-import { PushModule } from './push/push.module';
 import { RedisModule } from './redis/redis.module';
 import { WsModule } from './ws/ws.module';
 
 @Module({
-  imports: [AuthModule, RedisModule, DynamoModule, WsModule, PushModule],
+  imports: [AuthModule, RedisModule, DynamoModule, WsModule],
   controllers: [AppController, HealthController],
   providers: [AppService],
 })

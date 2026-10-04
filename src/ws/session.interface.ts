@@ -44,8 +44,6 @@ export interface ConnectionParams {
  * Live WebSocket session for one connected client.
  *
  * - `socket` is the per-connection WebSocket instance
- * - `sequenceNumber` starts at 0 and is stored for future use
- * - `heartbeatAt` is the connect-time timestamp, stored for future use
  * - `presenceToken` is a per-connection unique token mirrored into the
  *   `Clients` presence row, so a stale socket-close delete cannot remove a
  *   fresh row written by a later reconnect on the same `clientId`.
@@ -54,8 +52,6 @@ export interface Session {
   userId: UserId;
   clientId: ClientId;
   socket: SessionSocket;
-  sequenceNumber: number;
-  heartbeatAt: number;
   presenceToken: string;
 }
 

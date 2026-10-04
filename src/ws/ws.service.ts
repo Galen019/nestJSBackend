@@ -2,8 +2,7 @@
  * In-memory WebSocket session registry with DynamoDB presence tracking.
  *
  * - Owns the `sessions` map keyed by branded `ClientId`
- * - Handles duplicate policy, lifecycle cleanup, and sends
- *   the serialized payload size via the `bytes` field below
+ * - Handles duplicate policy, lifecycle cleanup, and single-client sends
  * - Delegates presence to `PresenceService` best-effort: registered connects
  *   upsert `User`/`Clients` rows, socket close deletes the `Clients` row.
  */
@@ -29,19 +28,6 @@ const MAX_LOGGED_PAYLOAD_CHARS = 500;
  */
 export type RegisterSessionResult =
   { kind: 'registered' } | { kind: 'duplicate' } | { kind: 'rejected' };
-
-/**
- * Outcome counts for one fan-out.
- *
- * - `sent`/`skipped` count reachable vs missing/closed recipients
- * - `bytes` is the serialized JSON payload size, reported so the push path
- *   can trace payload sizes without re-serializing.
- */
-export interface FanOutResult {
-  sent: number;
-  skipped: number;
-  bytes: number;
-}
 
 /**
  * Registry mapping `ClientId` to its live WebSocket session.
@@ -74,8 +60,8 @@ export class WsService {
    *
    * - closes with 1008 when `userId`/`clientId` are undefined
    * - closes the NEW socket with 1008 when `clientId` already exists, old kept
-   * - otherwise stores `{ sequenceNumber: 0, heartbeatAt: Date.now() }`
-   *   with a fresh `presenceToken` for the conditional presence delete
+   * - otherwise stores the socket with a fresh `presenceToken` for the
+   *   conditional presence delete
    * - fire-and-forget presence upsert after registration; Dynamo failures
    *   never block the socket because `PresenceService` swallows them
    * - attaches `message`/`error` listeners for lifecycle coverage, plus a
@@ -102,8 +88,6 @@ export class WsService {
       userId,
       clientId,
       socket,
-      sequenceNumber: 0,
-      heartbeatAt: Date.now(),
       presenceToken: randomUUID(),
     };
     this.sessions.set(clientId, session);
@@ -147,49 +131,30 @@ export class WsService {
   }
 
   /**
-   * Serializes a payload to JSON once for the send path.
+   * Sends a JSON message to one client.
    *
-   * - returns the JSON string when `message` serializes cleanly
-   * - returns undefined when `stringify` throws or yields no string
-   * - logs a per-client warning when `clientId` is given, else a broadcast warning.
-   *
-   * @param message Payload to serialize to JSON.
-   * @param clientId Optional recipient for targeted log context.
-   * @return The JSON string, or undefined when unserializable.
-   */
-  private serializeMessage(
-    message: unknown,
-    clientId?: ClientId,
-  ): string | undefined {
-    let payload: unknown;
-    try {
-      payload = JSON.stringify(message);
-    } catch {
-      payload = undefined;
-    }
-    if (typeof payload !== 'string') {
-      if (clientId === undefined) {
-        this.logger.warn('Dropping unserializable broadcast message');
-      } else {
-        this.logger.warn('Dropping unserializable message', clientId);
-      }
-      return undefined;
-    }
-    return payload;
-  }
-
-  /**
-   * Sends an already-serialized payload to one client.
-   *
+   * - returns false when the payload cannot be serialized
    * - returns false when no session exists for `clientId`
    * - returns false when the socket is not currently open
    * - otherwise sends via `session.socket.send(...)` and returns true.
    *
    * @param clientId Unique session key of the recipient.
-   * @param payload JSON string to send without re-serializing.
+   * @param message Payload to serialize to JSON and send.
    * @return True when the message was sent.
    */
-  private sendSerialized(clientId: ClientId, payload: string): boolean {
+  sendToClient(clientId: ClientId, message: unknown): boolean {
+    let payload: string;
+    try {
+      const stringified: unknown = JSON.stringify(message);
+      if (typeof stringified !== 'string') {
+        this.logger.warn('Dropping unserializable message', clientId);
+        return false;
+      }
+      payload = stringified;
+    } catch {
+      this.logger.warn('Dropping unserializable message', clientId);
+      return false;
+    }
     const session = this.sessions.get(clientId);
     if (session === undefined) {
       return false;
@@ -204,55 +169,6 @@ export class WsService {
       this.logger.warn('Failed to send message', clientId);
       return false;
     }
-  }
-
-  /**
-   * Sends a JSON message to one client.
-   *
-   * - returns false when no session exists for `clientId`
-   * - returns false when the socket is not currently open
-   * - returns false when the payload cannot be serialized
-   * - otherwise sends via `session.socket.send(...)` and returns true.
-   *
-   * @param clientId Unique session key of the recipient.
-   * @param message Payload to serialize to JSON and send.
-   * @return True when the message was sent.
-   */
-  sendToClient(clientId: ClientId, message: unknown): boolean {
-    const payload = this.serializeMessage(message, clientId);
-    if (payload === undefined) {
-      return false;
-    }
-    return this.sendSerialized(clientId, payload);
-  }
-
-  /**
-   * Sends a JSON message to many clients, best-effort.
-   *
-   * - serializes `message` once, then fans out the shared payload
-   * - never throws, missing/closed/unserializable entries are skipped
-   * - returns counts plus the serialized size so callers can observe
-   *   without per-id receipts or re-serializing.
-   *
-   * @param clientIds Recipient session keys to fan out to.
-   * @param message Payload to serialize to JSON once and send.
-   * @return Sent/skipped counts plus the serialized payload size in bytes.
-   */
-  sendToClients(clientIds: ClientId[], message: unknown): FanOutResult {
-    const payload = this.serializeMessage(message);
-    if (payload === undefined) {
-      return { sent: 0, skipped: clientIds.length, bytes: 0 };
-    }
-    let sent = 0;
-    let skipped = 0;
-    for (const clientId of clientIds) {
-      if (this.sendSerialized(clientId, payload)) {
-        sent += 1;
-      } else {
-        skipped += 1;
-      }
-    }
-    return { sent, skipped, bytes: Buffer.byteLength(payload, 'utf8') };
   }
 
   /**

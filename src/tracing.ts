@@ -8,7 +8,6 @@
  *   service-name default, the endpoint default, and the enabled gate live here
  * - Redacts the `key` query param (plus the SDK defaults) from incoming spans
  * - Exposes `isHealthRequest` and `buildHttpInstrumentation` for unit tests
- * - Manual push spans live in `PushService` via `@opentelemetry/api`
  * - Never captures tokens, Authorization headers, message bodies, Redis keys,
  *   or Redis values.
  */
@@ -19,7 +18,6 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import type { IncomingMessage } from 'node:http';
-import { parseEnvFlag } from './common/env';
 
 /**
  * Default OTLP/gRPC traces endpoint (in-compose Jaeger).
@@ -63,12 +61,17 @@ let sdk: NodeSDK | undefined;
 let started = false;
 let shutdownHookRegistered = false;
 
+/** Values that enable tracing, including blank (default-on). */
+const ENABLED_VALUES: ReadonlySet<string> = new Set(['', 'true', '1', 'yes']);
+
+/** Values that explicitly disable tracing. */
+const DISABLED_VALUES: ReadonlySet<string> = new Set(['false', '0', 'no']);
+
 /**
  * Parses the `OTEL_ENABLED` toggle.
  *
  * - `undefined`/blank means enabled (code default true, tests force false via env)
- * - the truthy set comes from the canonical `parseEnvFlag` helper
- * - `false`/`0`/`no` mean disabled
+ * - `true`/`1`/`yes` mean enabled, `false`/`0`/`no` mean disabled
  * - anything else warns and stays enabled so a typo cannot silently kill
  *   tracing in one environment while it runs in another.
  *
@@ -77,10 +80,10 @@ let shutdownHookRegistered = false;
  */
 export function parseEnabled(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase() ?? '';
-  if (normalized === '' || parseEnvFlag(value)) {
+  if (ENABLED_VALUES.has(normalized)) {
     return true;
   }
-  if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+  if (DISABLED_VALUES.has(normalized)) {
     return false;
   }
   console.warn(

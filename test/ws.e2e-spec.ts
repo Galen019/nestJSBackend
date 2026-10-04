@@ -185,8 +185,7 @@ describe('WsGateway (e2e)', () => {
     });
   }
 
-  it('registers a session with identity, socket, sequenceNumber, and heartbeatAt', async () => {
-    const before = Date.now();
+  it('registers a session with identity, socket, and presenceToken', async () => {
     await connectClient();
     await waitForSessionCount(1);
 
@@ -194,8 +193,7 @@ describe('WsGateway (e2e)', () => {
     expect(session?.userId).toBe('user-123');
     expect(session?.clientId).toBe('client-456');
     expect(session?.socket).toBeDefined();
-    expect(session?.sequenceNumber).toBe(0);
-    expect(session?.heartbeatAt).toBeGreaterThanOrEqual(before);
+    expect(typeof session?.presenceToken).toBe('string');
     expect(wsService.getSessionCount()).toBe(1);
   });
 

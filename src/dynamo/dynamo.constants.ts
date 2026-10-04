@@ -25,6 +25,22 @@ const DEFAULT_AWS_REGION = 'us-east-1';
 const DEFAULT_DUMMY_CREDENTIAL = 'local';
 
 /**
+ * Resolves a credential env value with the dummy local fallback.
+ *
+ * - blank and missing values fall back so local boots need no AWS keys
+ * - non-blank values pass through untouched.
+ *
+ * @param value Raw env value.
+ * @return The credential or the local default.
+ */
+function orLocalCredential(value: string | undefined): string {
+  if (value === undefined || value === '') {
+    return DEFAULT_DUMMY_CREDENTIAL;
+  }
+  return value;
+}
+
+/**
  * Reads DynamoDB config from the environment with local defaults.
  *
  * - endpoint defaults to the local DynamoDB container port
@@ -50,16 +66,8 @@ export function getDynamoConfig(): DynamoConfig {
   if (region.trim().length === 0) {
     throw new Error('Invalid AWS_REGION: must be a non-empty string');
   }
-  const accessKeyId =
-    process.env.AWS_ACCESS_KEY_ID === undefined ||
-    process.env.AWS_ACCESS_KEY_ID === ''
-      ? DEFAULT_DUMMY_CREDENTIAL
-      : process.env.AWS_ACCESS_KEY_ID;
-  const secretAccessKey =
-    process.env.AWS_SECRET_ACCESS_KEY === undefined ||
-    process.env.AWS_SECRET_ACCESS_KEY === ''
-      ? DEFAULT_DUMMY_CREDENTIAL
-      : process.env.AWS_SECRET_ACCESS_KEY;
+  const accessKeyId = orLocalCredential(process.env.AWS_ACCESS_KEY_ID);
+  const secretAccessKey = orLocalCredential(process.env.AWS_SECRET_ACCESS_KEY);
   return {
     endpoint: rawEndpoint,
     hostname: parsed.hostname,

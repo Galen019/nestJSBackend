@@ -3,7 +3,6 @@ services:
     build: .
     ports:
       - '127.0.0.1:${PORT:-3000}:${PORT:-3000}'
-      - '127.0.0.1:${GRPC_PORT:-50051}:${GRPC_PORT:-50051}'
     restart: unless-stopped
     depends_on:
       redis:
@@ -15,7 +14,6 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=${PORT:-3000}
-      - GRPC_URL=0.0.0.0:${GRPC_PORT:-50051}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD}

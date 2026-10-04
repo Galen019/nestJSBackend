@@ -108,7 +108,7 @@ describe('JwtAuthGuard', () => {
     );
   });
 
-  it('passes non-HTTP contexts through for WS/gRPC self-auth', async () => {
+  it('passes non-HTTP contexts through for WS self-auth', async () => {
     await compile(false);
     const context = {
       getHandler: () => ({}),
