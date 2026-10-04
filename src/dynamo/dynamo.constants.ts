@@ -103,9 +103,6 @@ export function isLocalDynamoHostname(hostname: string): boolean {
   if (normalized.startsWith('[') && normalized.endsWith(']')) {
     normalized = normalized.slice(1, -1);
   }
-  if (normalized.length === 0) {
-    return false;
-  }
   return LOCAL_DYNAMO_HOSTNAMES.includes(normalized);
 }
 

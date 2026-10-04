@@ -6,6 +6,7 @@
 
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { PresenceModule } from '../presence/presence.module';
 import { WsGateway } from './ws.gateway';
 import { WsService } from './ws.service';
 
@@ -16,7 +17,7 @@ import { WsService } from './ws.service';
  * - Provides and exports `WsService` for session lookup and sends.
  */
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, PresenceModule],
   providers: [WsGateway, WsService],
   exports: [WsService],
 })

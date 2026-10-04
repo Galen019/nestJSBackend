@@ -18,6 +18,7 @@ import {
   startInMemoryTracing,
   type InMemoryTracing,
 } from '../../test/tracing-test.helper';
+import { PresenceService } from '../presence/presence.service';
 import { WsService } from '../ws/ws.service';
 import {
   MAX_CLIENT_IDS,
@@ -178,13 +179,24 @@ describe('PushService.publishStream', () => {
    * Builds a testing module with the real PushService/WsService chain.
    *
    * - provider first (via the fixture) so the service tracer delegates to it
+   * - WsService gets a mocked PresenceService so no Dynamo calls happen
    * - tracks the module so it can be closed after each test.
    *
    * @return The compiled push service.
    */
   async function compileReal(): Promise<PushService> {
+    const presence = {
+      trackConnect: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+      trackDisconnect: vi
+        .fn<() => Promise<void>>()
+        .mockResolvedValue(undefined),
+    };
     module = await Test.createTestingModule({
-      providers: [PushService, WsService],
+      providers: [
+        PushService,
+        WsService,
+        { provide: PresenceService, useValue: presence },
+      ],
     }).compile();
     return module.get<PushService>(PushService);
   }

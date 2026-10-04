@@ -52,7 +52,8 @@ function defineTable(
  * - Member PK=(chatId, userId) + GSI MembersByUser(userId, chatId)
  * - Inbox PK=(clientId, messageId), no GSI (inbox-by-client is a PK query)
  * - Message PK=messageId + GSI MessagesByChat(chatId, timestamp)
- * - Inbox/Message expire via `expiresAt`, reconciled on every boot.
+ * - Inbox/Message/Clients expire via `expiresAt`, reconciled on every boot
+ * - User is a permanent registry by design: no TTL, no delete on disconnect.
  */
 export const TABLE_DEFINITIONS: TableDefinition[] = [
   defineTable({
@@ -60,24 +61,27 @@ export const TABLE_DEFINITIONS: TableDefinition[] = [
     AttributeDefinitions: [{ AttributeName: 'userId', AttributeType: 'S' }],
     KeySchema: [{ AttributeName: 'userId', KeyType: 'HASH' }],
   }),
-  defineTable({
-    TableName: 'Clients',
-    AttributeDefinitions: [
-      { AttributeName: 'clientId', AttributeType: 'S' },
-      { AttributeName: 'userId', AttributeType: 'S' },
-    ],
-    KeySchema: [{ AttributeName: 'clientId', KeyType: 'HASH' }],
-    GlobalSecondaryIndexes: [
-      {
-        IndexName: 'ClientsByUser',
-        KeySchema: [
-          { AttributeName: 'userId', KeyType: 'HASH' },
-          { AttributeName: 'clientId', KeyType: 'RANGE' },
-        ],
-        Projection: { ProjectionType: 'ALL' },
-      },
-    ],
-  }),
+  defineTable(
+    {
+      TableName: 'Clients',
+      AttributeDefinitions: [
+        { AttributeName: 'clientId', AttributeType: 'S' },
+        { AttributeName: 'userId', AttributeType: 'S' },
+      ],
+      KeySchema: [{ AttributeName: 'clientId', KeyType: 'HASH' }],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: 'ClientsByUser',
+          KeySchema: [
+            { AttributeName: 'userId', KeyType: 'HASH' },
+            { AttributeName: 'clientId', KeyType: 'RANGE' },
+          ],
+          Projection: { ProjectionType: 'ALL' },
+        },
+      ],
+    },
+    TTL_ATTRIBUTE_NAME,
+  ),
   defineTable({
     TableName: 'LastSeen',
     AttributeDefinitions: [{ AttributeName: 'userId', AttributeType: 'S' }],

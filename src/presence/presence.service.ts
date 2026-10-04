@@ -1,0 +1,155 @@
+/**
+ * Best-effort WebSocket presence writer for DynamoDB.
+ *
+ * - owns all `User`/`Clients` PutItem/DeleteItem calls plus TTL math
+ * - called from `WsService` only on registered connects and on socket close
+ * - never throws: Dynamo failures are logged and swallowed so presence
+ *   can never block a healthy socket
+ * - `User` rows are permanent by design (no TTL, no delete); `Clients` rows
+ *   carry `expiresAt` (1 day) as a crash-safety net behind explicit deletes
+ * - each connect mints a per-connection `presenceToken` mirrored into its
+ *   `Clients` row; disconnects delete conditionally on that token, so a slow
+ *   delete landing after a fast reconnect on the same `clientId` fails its
+ *   condition and leaves the fresh row intact.
+ */
+import { Injectable, Logger } from '@nestjs/common';
+import { DeleteItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';
+import { DynamoService } from '../dynamo/dynamo.service';
+import { buildExpiresAt, CLIENT_PRESENCE_TTL_SECONDS } from '../dynamo/ttl';
+import type { ClientId, UserId } from '../ws/session.interface';
+
+/**
+ * Writes WS presence to the `User` and `Clients` tables, best-effort.
+ *
+ * - `trackConnect` upserts both rows; `trackDisconnect` removes the client row
+ * - disconnects are conditional on the connect-time token when provided
+ * - both resolve even when Dynamo is unreachable.
+ */
+@Injectable()
+export class PresenceService {
+  private readonly logger = new Logger(PresenceService.name);
+
+  /**
+   * Creates the service with the DynamoDB lifecycle wrapper.
+   *
+   * @param dynamo Lifecycle wrapper exposing the shared DynamoDB client.
+   */
+  constructor(private readonly dynamo: DynamoService) {}
+
+  /**
+   * Records a newly registered connection in DynamoDB.
+   *
+   * - upserts `User { userId }` unconditionally (permanent registry)
+   * - upserts `Clients { clientId, userId, expiresAt, presenceToken }`
+   *   unconditionally, `expiresAt` is now plus the 1-day presence lifetime
+   *   in epoch seconds; the token lets the matching disconnect delete
+   *   conditionally so stale closes cannot remove reconnected rows
+   * - logs and swallows Dynamo failures so callers can fire-and-forget.
+   *
+   * @param userId Owner of the connection.
+   * @param clientId Unique session key that connected.
+   * @param presenceToken Per-connection token minted by the session registry.
+   * @return Resolves when the writes settle or fail gracefully.
+   */
+  async trackConnect(
+    userId: UserId,
+    clientId: ClientId,
+    presenceToken: string,
+  ): Promise<void> {
+    try {
+      const client = this.dynamo.getClient();
+      const expiresAt = buildExpiresAt(CLIENT_PRESENCE_TTL_SECONDS);
+      await client.send(
+        new PutItemCommand({
+          TableName: 'User',
+          Item: { userId: { S: userId } },
+        }),
+      );
+      await client.send(
+        new PutItemCommand({
+          TableName: 'Clients',
+          Item: {
+            clientId: { S: clientId },
+            userId: { S: userId },
+            expiresAt: { N: String(expiresAt) },
+            presenceToken: { S: presenceToken },
+          },
+        }),
+      );
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : 'unknown error';
+      this.logger.warn(`Failed to track connect: ${detail} ${clientId}`);
+    }
+  }
+
+  /**
+   * Removes a disconnected client from DynamoDB.
+   *
+   * - deletes the `Clients` row by `clientId` PK, idempotent when missing
+   * - with a `presenceToken`, deletes only when the stored token matches, so
+   *   a stale close racing a reconnect leaves the fresh row intact; the
+   *   resulting `ConditionalCheckFailedException` is an expected benign
+   *   outcome, logged without warn-level alarm
+   * - `User` rows are intentionally left behind (permanent registry)
+   * - logs and swallows Dynamo failures so callers can fire-and-forget.
+   *
+   * @param clientId Unique session key that disconnected.
+   * @param presenceToken Token minted at connect time; omit only for callers
+   *   that have no token, which delete unconditionally (legacy path).
+   * @return Resolves when the delete settles or fails gracefully.
+   */
+  async trackDisconnect(
+    clientId: ClientId,
+    presenceToken?: string,
+  ): Promise<void> {
+    try {
+      const client = this.dynamo.getClient();
+      if (presenceToken === undefined) {
+        await client.send(
+          new DeleteItemCommand({
+            TableName: 'Clients',
+            Key: { clientId: { S: clientId } },
+          }),
+        );
+        return;
+      }
+      await client.send(
+        new DeleteItemCommand({
+          TableName: 'Clients',
+          Key: { clientId: { S: clientId } },
+          ConditionExpression: 'presenceToken = :token',
+          ExpressionAttributeValues: { ':token': { S: presenceToken } },
+        }),
+      );
+    } catch (err: unknown) {
+      if (presenceToken !== undefined && isConditionalCheckFailed(err)) {
+        this.logger.log(
+          `Ignoring stale disconnect for ${clientId}: presence row was reconnected`,
+        );
+        return;
+      }
+      const detail = err instanceof Error ? err.message : 'unknown error';
+      this.logger.warn(`Failed to track disconnect: ${detail} ${clientId}`);
+    }
+  }
+}
+
+/**
+ * Checks whether an SDK error is a failed delete condition.
+ *
+ * - matches `ConditionalCheckFailedException` by `name` or `code` because
+ *   SDK faults vary by path; non-object failures never match.
+ *
+ * @param err Unknown client failure.
+ * @return True when the error is a failed condition check.
+ */
+function isConditionalCheckFailed(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) {
+    return false;
+  }
+  const record = err as { name?: unknown; code?: unknown };
+  return (
+    record.name === 'ConditionalCheckFailedException' ||
+    record.code === 'ConditionalCheckFailedException'
+  );
+}
