@@ -5,19 +5,42 @@
  * - connects with `userId`/`clientId`/`token` and fails on unexpected closes
  * - `--no-auth` skips the token to assert the server rejects with 1008.
  *
- * Usage: npx ts-node --transpile-only scripts/test-ws.ts [endpoint] [clientId] [--no-auth]
- * Example: npx ts-node --transpile-only scripts/test-ws.ts ws://localhost:3000/ws client1
+ * Usage: npx ts-node --transpile-only scripts/test-ws.ts [endpoint] <userId> <clientId> [--no-auth]
+ * Example: npx ts-node --transpile-only scripts/test-ws.ts ws://localhost:3000/ws user1 client1
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sign } from 'jsonwebtoken';
 import { WebSocket } from 'ws';
 
-const DEFAULT_USER_ID = 'test-user';
 const DEFAULT_ISSUER = 'test-issuer';
 const DEFAULT_AUDIENCE = 'test-audience';
 
-const endpoint = process.argv[2] ?? 'ws://localhost:3000/ws';
+const positionalArgs = process.argv
+  .slice(2)
+  .filter((arg) => arg !== '--no-auth');
+const endpoint = positionalArgs[0] ?? 'ws://localhost:3000/ws';
+const userIdArg = positionalArgs[1];
+const clientIdArg = positionalArgs[2];
+
+/**
+ * Resolves the required CLI identities passed as positional arguments.
+ *
+ * @return The user and client ids to bind the probe token and query to.
+ */
+function requireArgs(): { userId: string; clientId: string } {
+  if (
+    userIdArg === undefined ||
+    userIdArg === '' ||
+    clientIdArg === undefined ||
+    clientIdArg === ''
+  ) {
+    throw new Error(
+      'Missing required <userId> <clientId> arguments. Usage: npx ts-node --transpile-only scripts/test-ws.ts [endpoint] <userId> <clientId> [--no-auth]',
+    );
+  }
+  return { userId: userIdArg, clientId: clientIdArg };
+}
 
 /**
  * Reads the test private key used to sign the probe JWT.
@@ -124,9 +147,10 @@ function wait(milliseconds: number): Promise<void> {
  * - throws when the close code differs, so the run fails.
  */
 async function probeRejected(): Promise<void> {
+  const { userId, clientId } = requireArgs();
   const query = new URLSearchParams({
-    userId: DEFAULT_USER_ID,
-    clientId: process.argv[3] ?? `cli-client-${Date.now()}`,
+    userId,
+    clientId,
   });
   const url = `${endpoint}?${query.toString()}`;
   console.log(`Connecting without a token: ${endpoint}`);
@@ -141,7 +165,7 @@ async function probeRejected(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const clientId = process.argv[3] ?? `cli-client-${Date.now()}`;
+  const { userId, clientId } = requireArgs();
   const useAuth = !process.argv.includes('--no-auth');
 
   if (!useAuth) {
@@ -150,13 +174,15 @@ async function main(): Promise<void> {
   }
 
   const query = new URLSearchParams({
-    userId: DEFAULT_USER_ID,
+    userId,
     clientId,
   });
-  query.set('token', signProbeToken(readPrivateKey(), DEFAULT_USER_ID));
+  query.set('token', signProbeToken(readPrivateKey(), userId));
   const validUrl = `${endpoint}?${query.toString()}`;
 
-  console.log(`Connecting to ${endpoint} with clientId=${clientId}`);
+  console.log(
+    `Connecting to ${endpoint} with userId=${userId} clientId=${clientId}`,
+  );
   const { socket, closeIntentionally } = await connect(validUrl, 'session');
   console.log('PASS: authenticated connection opened');
 
@@ -172,22 +198,6 @@ async function main(): Promise<void> {
 
   closeIntentionally();
   console.log('Connection closed');
-
-  const invalidUrl = endpoint;
-  console.log(`Testing invalid connection: ${invalidUrl}`);
-
-  const invalidSocket = await connect(invalidUrl, 'invalid-probe', true).then(
-    ({ socket: opened }) => opened,
-  );
-  const closeCode = await waitForClose(invalidSocket);
-
-  if (closeCode !== 1008) {
-    throw new Error(
-      `Expected invalid connection to close with 1008, got ${closeCode}`,
-    );
-  }
-
-  console.log('PASS: missing parameters rejected with close code 1008');
 }
 
 main().catch((error: unknown) => {

@@ -93,7 +93,7 @@ export class WsService {
     this.sessions.set(clientId, session);
     void this.presence.trackConnect(userId, clientId, session.presenceToken);
     socket.on('message', (data: unknown) => {
-      this.handleMessage(clientId, data);
+      this.handleMessage(userId, clientId, data);
     });
     socket.on('error', (err: unknown) => {
       this.handleError(clientId, err);
@@ -101,9 +101,9 @@ export class WsService {
     socket.on('close', () => {
       this.sessions.delete(clientId);
       void this.presence.trackDisconnect(clientId, session.presenceToken);
-      this.logger.log('Client disconnected', clientId);
+      this.logger.log(`${userId} #${clientId} disconnected`);
     });
-    this.logger.log('Client connected', clientId);
+    this.logger.log(`${userId} #${clientId} connected`);
     return { kind: 'registered' };
   }
 
@@ -177,17 +177,24 @@ export class WsService {
    * - lifecycle hook kept minimal by design, receipt is logged at debug level
    * - payload preview is truncated so one frame cannot flood the logs.
    *
+   * @param userId Owner of the session that sent the message.
    * @param clientId Owner of the socket that sent the message.
    * @param data Raw message payload from the socket.
    * @return Nothing, the payload is only logged.
    */
-  private handleMessage(clientId: ClientId, data: unknown): void {
+  private handleMessage(
+    userId: UserId,
+    clientId: ClientId,
+    data: unknown,
+  ): void {
     const raw = String(data);
     const preview =
       raw.length > MAX_LOGGED_PAYLOAD_CHARS
         ? `${raw.slice(0, MAX_LOGGED_PAYLOAD_CHARS)}… (truncated ${raw.length} chars)`
         : raw;
-    this.logger.debug(`Message received: ${preview}`, clientId);
+    this.logger.debug(
+      `Message received from ${userId} #${clientId}: ${preview}`,
+    );
   }
 
   /**

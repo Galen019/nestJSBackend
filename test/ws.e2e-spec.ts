@@ -328,8 +328,7 @@ describe('WsGateway (e2e)', () => {
     await vi.waitFor(
       () => {
         expect(debugSpy).toHaveBeenCalledWith(
-          expect.stringContaining('hello-e2e-payload'),
-          'client-456',
+          'Message received from user-123 #client-456: hello-e2e-payload',
         );
       },
       { timeout: 3000 },

@@ -7,7 +7,7 @@
  * - send: routes JSON through the right socket, false for unknown/closed clients
  * - close: the registration close listener removes the session and deletes presence by token
  * - duplicate: new socket closed with 1008, existing session kept
- * - message: inbound payload is forwarded to the debug log without side effects
+ * - message: inbound payload is logged at debug with userId/clientId attribution
  */
 import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -395,8 +395,7 @@ describe('WsService', () => {
     fireMessage(fake, 'hello-payload');
 
     expect(debugSpy).toHaveBeenCalledWith(
-      expect.stringContaining('hello-payload'),
-      'client-456',
+      'Message received from user-123 #client-456: hello-payload',
     );
   });
 
@@ -414,8 +413,7 @@ describe('WsService', () => {
     fireMessage(fake, Buffer.from('buffer-payload', 'utf8'));
 
     expect(debugSpy).toHaveBeenCalledWith(
-      expect.stringContaining('buffer-payload'),
-      'client-456',
+      'Message received from user-123 #client-456: buffer-payload',
     );
   });
 
@@ -434,9 +432,9 @@ describe('WsService', () => {
 
     expect(debugSpy).toHaveBeenCalledWith(
       expect.stringContaining('truncated 2000 chars'),
-      'client-456',
     );
     const logged = debugSpy.mock.calls[0]?.[0];
+    expect(logged).toContain('Message received from user-123 #client-456: ');
     expect(typeof logged === 'string' ? logged.length : 0).toBeLessThan(2000);
   });
 
