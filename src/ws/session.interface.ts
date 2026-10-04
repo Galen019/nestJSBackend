@@ -4,6 +4,8 @@
  * - Branded `UserId`/`ClientId` validated once at the boundary
  * - Minimal `SessionSocket` surface the registry needs
  * - `Session` shape stored in the registry keyed by `clientId`
+ * - `SessionTracker` observers fanned out on connect/disconnect, so new
+ *   side effects wire in via `SESSION_TRACKERS` without touching the registry
  */
 
 /** User identity, validated once at the connection boundary. */
@@ -53,6 +55,48 @@ export interface Session {
   clientId: ClientId;
   socket: SessionSocket;
   presenceToken: string;
+}
+
+/** DI token for the ordered session-tracker fan-out list. */
+export const SESSION_TRACKERS = 'SESSION_TRACKERS';
+
+/**
+ * Lifecycle event fanned out to every session tracker.
+ *
+ * - `token` is the per-connection token minted at registration
+ * - `userSessionCount` is the local session total for `userId` after the
+ *   event: connect includes the new session (first reports 1), disconnect
+ *   excludes the closed one (last reports 0).
+ */
+export interface SessionLifecycleEvent {
+  userId: UserId;
+  clientId: ClientId;
+  token: string;
+  userSessionCount: number;
+}
+
+/**
+ * Observer of WebSocket session lifecycle.
+ *
+ * - `WsService` owns the sessions and notifies every tracker on
+ *   connect/disconnect, so tracker N+1 is a module-wiring line
+ * - handlers must never throw and never block: failures are swallowed
+ *   internally and async work runs fire-and-forget, so one slow tracker
+ *   cannot stall registration or teardown.
+ */
+export interface SessionTracker {
+  /**
+   * Observes a newly registered session.
+   *
+   * @param event Session identity plus the post-connect user total.
+   */
+  handleConnect(event: SessionLifecycleEvent): void;
+  /**
+   * Observes a closed session.
+   *
+   * @param event Session identity plus the remaining user total.
+   */
+  handleDisconnect(event: SessionLifecycleEvent): void;
 }
 
 /**

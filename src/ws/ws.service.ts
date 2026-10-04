@@ -1,17 +1,25 @@
 /**
- * In-memory WebSocket session registry with DynamoDB presence tracking.
+ * In-memory WebSocket session registry with tracker fan-out.
  *
- * - Owns the `sessions` map keyed by branded `ClientId`
+ * - Owns the `sessions` map keyed by branded `ClientId`, the single source
+ *   of truth for local connections; per-user totals derive from it on demand
  * - Handles duplicate policy, lifecycle cleanup, and single-client sends
- * - Delegates presence to `PresenceService` best-effort: registered connects
- *   upsert `User`/`Clients` rows, socket close deletes the `Clients` row.
+ * - Fans registered connects and socket closes out to `SESSION_TRACKERS`
+ *   (presence, per-user topics); trackers are best-effort and never block.
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
-import { PresenceService } from '../presence/presence.service';
-import type { ClientId, ConnectionParams, Session } from './session.interface';
+import {
+  SESSION_TRACKERS,
+  type ClientId,
+  type ConnectionParams,
+  type Session,
+  type SessionLifecycleEvent,
+  type SessionTracker,
+  type UserId,
+} from './session.interface';
 
 /** Close code for policy violations (missing params, duplicate clientId). */
 export const WS_CLOSE_POLICY_VIOLATION = 1008;
@@ -36,12 +44,11 @@ export type RegisterSessionResult =
  * - Duplicate policy: reject the NEW connection, keep the existing session
  * - Each registration closes over its session, so the socket removes its own
  *   entry on `close` with no reverse lookup structure
- * - Presence writes happen only on `registered`; `duplicate`/`rejected` do
- *   zero Dynamo I/O so refused connections never refresh presence rows
- * - Each session mints a `presenceToken` mirrored into its presence row;
- *   the close handler deletes conditionally on that token, so a slow
- *   disconnect landing after a fast reconnect on the same `clientId`
- *   cannot remove the fresh row.
+ * - Tracker fan-out happens only on `registered`; `duplicate`/`rejected` do
+ *   zero side-effect I/O so refused connections never touch presence or topics
+ * - Each session mints a `presenceToken` fanned out as the event token, so a
+ *   slow disconnect landing after a fast reconnect on the same `clientId`
+ *   cannot remove the fresh presence row.
  */
 @Injectable()
 export class WsService {
@@ -49,25 +56,27 @@ export class WsService {
   private readonly sessions = new Map<ClientId, Session>();
 
   /**
-   * Creates the registry with its presence writer.
+   * Creates the registry with its lifecycle observers.
    *
-   * @param presence Best-effort DynamoDB writer for `User`/`Clients` rows.
+   * @param trackers Best-effort observers notified on connect/disconnect.
    */
-  constructor(private readonly presence: PresenceService) {}
+  constructor(
+    @Inject(SESSION_TRACKERS)
+    private readonly trackers: SessionTracker[],
+  ) {}
 
   /**
    * Registers a new connection as a session.
    *
    * - closes with 1008 when `userId`/`clientId` are undefined
    * - closes the NEW socket with 1008 when `clientId` already exists, old kept
-   * - otherwise stores the socket with a fresh `presenceToken` for the
-   *   conditional presence delete
-   * - fire-and-forget presence upsert after registration; Dynamo failures
-   *   never block the socket because `PresenceService` swallows them
+   * - otherwise stores the socket with a fresh `presenceToken` and fans the
+   *   connect out to every tracker; tracker failures never block the socket
+   *   because trackers swallow them internally
    * - attaches `message`/`error` listeners for lifecycle coverage, plus a
-   *   `close` listener that removes the session and conditionally deletes the
-   *   presence row by token, so disconnected clients never linger while
-   *   stale closes never remove a reconnected row.
+   *   `close` listener that removes the session before fanning out the
+   *   disconnect, so disconnected clients never linger while stale closes
+   *   still carry the right token and remaining user total.
    *
    * @param params Connection socket plus boundary-parsed ids.
    * @return Discriminated outcome of the registration attempt.
@@ -91,7 +100,7 @@ export class WsService {
       presenceToken: randomUUID(),
     };
     this.sessions.set(clientId, session);
-    void this.presence.trackConnect(userId, clientId, session.presenceToken);
+    this.notifyConnect(session);
     socket.on('message', (data: unknown) => {
       this.handleMessage(clientId, data);
     });
@@ -100,11 +109,68 @@ export class WsService {
     });
     socket.on('close', () => {
       this.sessions.delete(clientId);
-      void this.presence.trackDisconnect(clientId, session.presenceToken);
+      this.notifyDisconnect(session);
       this.logger.log('Client disconnected', clientId);
     });
     this.logger.log('Client connected', clientId);
     return { kind: 'registered' };
+  }
+
+  /**
+   * Fans a connect out to every tracker with the post-connect user total.
+   *
+   * - the session is already stored, so the count includes the new session.
+   *
+   * @param session Newly registered session.
+   */
+  private notifyConnect(session: Session): void {
+    const event: SessionLifecycleEvent = {
+      userId: session.userId,
+      clientId: session.clientId,
+      token: session.presenceToken,
+      userSessionCount: this.countUserSessions(session.userId),
+    };
+    for (const tracker of this.trackers) {
+      tracker.handleConnect(event);
+    }
+  }
+
+  /**
+   * Fans a disconnect out to every tracker with the remaining user total.
+   *
+   * - the session is already removed, so the count excludes the closed one.
+   *
+   * @param session Session whose socket just closed.
+   */
+  private notifyDisconnect(session: Session): void {
+    const event: SessionLifecycleEvent = {
+      userId: session.userId,
+      clientId: session.clientId,
+      token: session.presenceToken,
+      userSessionCount: this.countUserSessions(session.userId),
+    };
+    for (const tracker of this.trackers) {
+      tracker.handleDisconnect(event);
+    }
+  }
+
+  /**
+   * Counts live sessions for one user from the registry itself.
+   *
+   * - derives the total by scanning `sessions`, so no second map can drift
+   * - linear in the session count, trivial next to socket I/O.
+   *
+   * @param userId Owner whose sessions to count.
+   * @return Live local sessions for the user.
+   */
+  private countUserSessions(userId: UserId): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId) {
+        count += 1;
+      }
+    }
+    return count;
   }
 
   /**
