@@ -9,9 +9,10 @@
  * - missing params: socket closed with 1008, nothing registered
  * - message: inbound client payload is written to the debug log
  * - topics: first client subscribes `user:{userId}`, last disconnect unsubscribes
+ * - limit: oversize frames close with 1009, session removed, peers
+ *   unaffected, warn-only logging with no error log
  */
 import { INestApplication, Logger } from '@nestjs/common';
-import { WsAdapter } from '@nestjs/platform-ws';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { join } from 'node:path';
@@ -23,6 +24,8 @@ import {
   channelFor,
   USER_TOPIC_SUBSCRIBER,
 } from './../src/user-topics/user-topic.service';
+import { WsServerAdapter } from './../src/ws/ws.adapter';
+import { DEFAULT_WS_MAX_PAYLOAD_BYTES } from './../src/ws/ws.constants';
 import { WsService } from './../src/ws/ws.service';
 import {
   TEST_JWT_AUDIENCE,
@@ -72,6 +75,7 @@ describe('WsGateway (e2e)', () => {
     );
     process.env.JWT_ISSUER = TEST_JWT_ISSUER;
     process.env.JWT_AUDIENCE = TEST_JWT_AUDIENCE;
+    delete process.env.WS_MAX_PAYLOAD_BYTES;
     const redisFake = {
       ping: async () => 'PONG',
       isReady: () => true,
@@ -93,7 +97,7 @@ describe('WsGateway (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
-    app.useWebSocketAdapter(new WsAdapter(app));
+    app.useWebSocketAdapter(new WsServerAdapter(app));
     await app.init();
     await app.listen(0);
     baseUrl = (await app.getUrl()).replace(/^http/, 'ws');
@@ -330,6 +334,44 @@ describe('WsGateway (e2e)', () => {
       },
       { timeout: 3000 },
     );
+  });
+
+  it('closes oversize frames with 1009, removes the session, keeps peers', async () => {
+    const victim = await connectClient(authQuery('user-123', 'client-victim'));
+    const peer = await connectClient(authQuery('user-123', 'client-peer'));
+    await waitForSessionCount(2);
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const errorSpy = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const closeCode = waitForClose(victim);
+    const peerMessage = nextMessage(peer);
+
+    victim.send(Buffer.alloc(DEFAULT_WS_MAX_PAYLOAD_BYTES * 2, 'a'));
+
+    await expect(closeCode).resolves.toBe(1009);
+    await waitForSessionCount(1);
+    await vi.waitFor(
+      () => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'Oversize frame rejected for user-123 #client-victim',
+          ),
+        );
+      },
+      { timeout: 3000 },
+    );
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(wsService.getSession(requireClientId('client-peer'))).toBeDefined();
+
+    expect(
+      wsService.sendToClient(requireClientId('client-peer'), {
+        type: 'PING',
+      }),
+    ).toBe(true);
+    await expect(peerMessage).resolves.toBe(JSON.stringify({ type: 'PING' }));
   });
 
   it('subscribes on connect and unsubscribes on the last disconnect', async () => {

@@ -20,6 +20,10 @@ import {
   type SessionTracker,
   type UserId,
 } from './session.interface';
+import {
+  WS_CLOSE_MESSAGE_TOO_BIG,
+  isWsPayloadTooBigError,
+} from './ws.constants';
 
 /** Close code for policy violations (missing params, duplicate clientId). */
 export const WS_CLOSE_POLICY_VIOLATION = 1008;
@@ -105,7 +109,7 @@ export class WsService {
       this.handleMessage(userId, clientId, data);
     });
     socket.on('error', (err: unknown) => {
-      this.handleError(clientId, err);
+      this.handleError(userId, clientId, err);
     });
     socket.on('close', () => {
       this.sessions.delete(clientId);
@@ -266,14 +270,24 @@ export class WsService {
   /**
    * Observes a socket error for a registered client.
    *
-   * - lifecycle hook kept minimal by design, the error is logged
+   * - oversize frames rejected by the transport `maxPayload` log at warn
+   *   with identity and the close code, never with payload bytes
+   * - other errors log at error level as before
    * - the session stays until the socket `close` listener removes it.
    *
+   * @param userId Owner of the session that errored.
    * @param clientId Owner of the socket that errored.
    * @param err Raw error value from the socket.
    * @return Nothing, the error is only logged.
    */
-  private handleError(clientId: ClientId, err: unknown): void {
+  private handleError(userId: UserId, clientId: ClientId, err: unknown): void {
+    if (isWsPayloadTooBigError(err)) {
+      this.logger.warn(
+        `Oversize frame rejected for ${userId} #${clientId} ` +
+          `(code ${WS_CLOSE_MESSAGE_TOO_BIG})`,
+      );
+      return;
+    }
     const detail = err instanceof Error ? err.message : 'unknown error';
     this.logger.error(`Socket error: ${detail}`, undefined, clientId);
   }

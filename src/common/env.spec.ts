@@ -5,7 +5,7 @@
  * - rejects missing, blank, falsy, and unrecognized values.
  */
 import { describe, it, expect } from 'vitest';
-import { parseEnvFlag } from './env';
+import { parseBoundedInt, parseEnvFlag } from './env';
 
 describe('parseEnvFlag', () => {
   it('accepts the truthy set', () => {
@@ -24,5 +24,65 @@ describe('parseEnvFlag', () => {
     expect(parseEnvFlag('0')).toBe(false);
     expect(parseEnvFlag('no')).toBe(false);
     expect(parseEnvFlag('bogus')).toBe(false);
+  });
+});
+
+describe('parseBoundedInt', () => {
+  it('returns the default for missing or empty input', () => {
+    expect(
+      parseBoundedInt(undefined, {
+        defaultValue: 6379,
+        min: 1,
+        max: 65535,
+        label: 'REDIS_PORT',
+      }),
+    ).toBe(6379);
+    expect(
+      parseBoundedInt('', {
+        defaultValue: 6379,
+        min: 1,
+        max: 65535,
+        label: 'REDIS_PORT',
+      }),
+    ).toBe(6379);
+  });
+
+  it('accepts integers within bounds and without an upper bound', () => {
+    expect(
+      parseBoundedInt('6380', {
+        defaultValue: 6379,
+        min: 1,
+        max: 65535,
+        label: 'REDIS_PORT',
+      }),
+    ).toBe(6380);
+    expect(
+      parseBoundedInt('200000000', {
+        defaultValue: 2097152,
+        min: 1,
+        label: 'WS_MAX_PAYLOAD_BYTES',
+      }),
+    ).toBe(200000000);
+  });
+
+  it('rejects non-integer, out-of-range, and non-numeric values', () => {
+    for (const raw of ['abc', '0', '1.5', ' ', '2MB']) {
+      expect(() =>
+        parseBoundedInt(raw, {
+          defaultValue: 6379,
+          min: 1,
+          max: 65535,
+          label: 'REDIS_PORT',
+        }),
+      ).toThrow(`Invalid REDIS_PORT: ${raw}`);
+    }
+    expect(() =>
+      parseBoundedInt('65536', {
+        defaultValue: 6379,
+        min: 1,
+        max: 65535,
+        label: 'REDIS_PORT',
+      }),
+    ).toThrow('Invalid REDIS_PORT: 65536');
   });
 });
