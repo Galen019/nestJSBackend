@@ -7,6 +7,7 @@
  *   shared by the command client and subscriber-only connections.
  */
 import { createClient, type RedisClientType } from 'redis';
+import { parseBoundedInt } from '../common/env';
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
@@ -25,15 +26,22 @@ const DEFAULT_REDIS_HOST = 'localhost';
 const DEFAULT_REDIS_PORT = 6379;
 const MAX_REDIS_PORT = 65535;
 
+/**
+ * Parses a raw `REDIS_PORT` value into a port number.
+ *
+ * - delegates to the shared bounded-int parser, one decision point
+ *   for integer env strictness across the codebase.
+ *
+ * @param raw Raw env value for the Redis port.
+ * @return The validated port number.
+ */
 function parsePort(raw: string | undefined): number {
-  if (raw === undefined || raw === '') {
-    return DEFAULT_REDIS_PORT;
-  }
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_REDIS_PORT) {
-    throw new Error(`Invalid REDIS_PORT: ${raw}`);
-  }
-  return parsed;
+  return parseBoundedInt(raw, {
+    defaultValue: DEFAULT_REDIS_PORT,
+    min: 1,
+    max: MAX_REDIS_PORT,
+    label: 'REDIS_PORT',
+  });
 }
 
 export function getRedisConfig(): RedisConfig {

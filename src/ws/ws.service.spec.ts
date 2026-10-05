@@ -93,6 +93,43 @@ function fireMessage(
   messageCall[1](payload);
 }
 
+/**
+ * Fires the captured `error` listener of a fake socket.
+ *
+ * - simulates the driver emitting `error` with the given value
+ * - fails fast when registration attached no error listener.
+ *
+ * @param fake Fake created by `createSocketFake`.
+ * @param err Error value to pass to the error listener.
+ * @return Nothing, the listener is invoked synchronously.
+ */
+function fireError(
+  fake: ReturnType<typeof createSocketFake>,
+  err: unknown,
+): void {
+  const errorCall = fake.mocks.on.mock.calls.find(
+    (call) => call[0] === 'error',
+  );
+  if (errorCall === undefined) {
+    throw new Error('Expected an error listener');
+  }
+  errorCall[1](err);
+}
+
+/**
+ * Creates a `ws` oversize error shaped like the receiver rejection.
+ *
+ * - carries the `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH` code
+ * - matches what `ws` emits before closing with 1009.
+ *
+ * @return Error with the oversize marker.
+ */
+function createOversizeError(): Error {
+  const err = new RangeError('Max payload size exceeded');
+  Object.assign(err, { code: 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH' });
+  return err;
+}
+
 describe('WsService', () => {
   let service: WsService;
   let module: TestingModule | undefined;
@@ -425,6 +462,56 @@ describe('WsService', () => {
     const logged = debugSpy.mock.calls[0]?.[0];
     expect(logged).toContain('Message received from user-123 #client-456: ');
     expect(typeof logged === 'string' ? logged.length : 0).toBeLessThan(2000);
+  });
+
+  it('warns with identity and close code on oversize transport errors', () => {
+    const fake = createSocketFake();
+    service.handleConnection({
+      socket: fake.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const errorSpy = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+
+    fireError(fake, createOversizeError());
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Oversize frame rejected for user-123'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('#client-456'),
+    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('code 1009'));
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('logs non-oversize socket errors at error level', () => {
+    const fake = createSocketFake();
+    service.handleConnection({
+      socket: fake.socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const errorSpy = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+
+    fireError(fake, new Error('boom'));
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Socket error: boom',
+      undefined,
+      'client-456',
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('drops unserializable payloads without sending', () => {
