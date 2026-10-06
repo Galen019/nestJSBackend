@@ -10,13 +10,17 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
+  canSendTo,
   extractGatewayIdentity,
   parseClientId,
+  parseInboundFrame,
   parseNonBlank,
   parseToken,
   parseUserId,
   resolveGatewayIdentity,
+  SEND_MESSAGE_OP,
   type GatewayIdentity,
+  type UserId,
 } from './session.interface';
 
 /**
@@ -161,5 +165,105 @@ describe('resolveGatewayIdentity', () => {
       kind: 'rejected',
       reason: 'token subject mismatch',
     });
+  });
+});
+
+/**
+ * Requires a branded user id for parser tests, failing fast on bad literals.
+ *
+ * @param value Literal user id used by the test.
+ * @return The branded user id.
+ */
+function mustUserId(value: string): UserId {
+  const parsed = parseUserId(value);
+  if (parsed === undefined) {
+    throw new Error(`Invalid test userId: ${value}`);
+  }
+  return parsed;
+}
+
+describe('parseInboundFrame', () => {
+  it('parses a sendMessage frame with a string payload', () => {
+    const frame = parseInboundFrame(
+      JSON.stringify({
+        op: SEND_MESSAGE_OP,
+        target: 'user-2',
+        message: 'PING',
+      }),
+    );
+
+    expect(frame).toEqual({
+      kind: 'send',
+      target: 'user-2',
+      message: 'PING',
+    });
+  });
+
+  it('passes object payloads through verbatim', () => {
+    const frame = parseInboundFrame(
+      JSON.stringify({
+        op: SEND_MESSAGE_OP,
+        target: 'user-2',
+        message: { text: 'hi' },
+      }),
+    );
+
+    expect(frame).toEqual({
+      kind: 'send',
+      target: 'user-2',
+      message: { text: 'hi' },
+    });
+  });
+
+  it('ignores non-JSON frames', () => {
+    expect(parseInboundFrame('hello-payload')).toEqual({
+      kind: 'ignore',
+      reason: 'non-JSON',
+    });
+  });
+
+  it('ignores non-object JSON frames', () => {
+    expect(parseInboundFrame(JSON.stringify(42))).toEqual({
+      kind: 'ignore',
+      reason: 'non-object',
+    });
+    expect(parseInboundFrame(JSON.stringify('hi'))).toEqual({
+      kind: 'ignore',
+      reason: 'non-object',
+    });
+  });
+
+  it('ignores unknown ops', () => {
+    expect(
+      parseInboundFrame(JSON.stringify({ op: 'other', target: 'user-2' })),
+    ).toEqual({ kind: 'ignore', reason: 'unknown op' });
+  });
+
+  it('marks blank targets as invalid', () => {
+    expect(
+      parseInboundFrame(
+        JSON.stringify({ op: SEND_MESSAGE_OP, target: '   ', message: 'PING' }),
+      ),
+    ).toEqual({ kind: 'invalid', reason: 'invalid target' });
+    expect(
+      parseInboundFrame(
+        JSON.stringify({ op: SEND_MESSAGE_OP, message: 'PING' }),
+      ),
+    ).toEqual({ kind: 'invalid', reason: 'invalid target' });
+  });
+
+  it('ignores sendMessage frames without a message', () => {
+    expect(
+      parseInboundFrame(
+        JSON.stringify({ op: SEND_MESSAGE_OP, target: 'user-2' }),
+      ),
+    ).toEqual({ kind: 'ignore', reason: 'missing message' });
+  });
+});
+
+describe('canSendTo', () => {
+  it('allows open DM between any two users', () => {
+    expect(canSendTo(mustUserId('user-1'), mustUserId('user-2'))).toBe(true);
+    expect(canSendTo(mustUserId('user-1'), mustUserId('user-1'))).toBe(true);
   });
 });

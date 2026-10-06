@@ -1,10 +1,5 @@
 /**
- * In-memory WebSocket session registry and local delivery service.
- *
- * - Tracks local sessions and per-user client membership
- * - Handles connection lifecycle, sends, and cross-replica broadcasts
- * - Notifies session trackers while isolating tracker failures
- * - Uses presence tokens to prevent stale disconnects removing fresh sessions
+ * Manages WebSocket sessions, delivery, and lifecycle tracking.
  */
 
 import { Inject, Injectable, Logger } from '@nestjs/common';
@@ -18,6 +13,9 @@ import {
 } from '../user-topics/user-topic.message';
 import {
   SESSION_TRACKERS,
+  SEND_MESSAGE_ERROR_OP,
+  canSendTo,
+  parseInboundFrame,
   type ClientId,
   type ConnectionParams,
   type Session,
@@ -30,31 +28,20 @@ import {
   isWsPayloadTooBigError,
 } from './ws.constants';
 
-/** Close code for policy violations (missing params, duplicate clientId). */
+/** Close code for rejected connections. */
 export const WS_CLOSE_POLICY_VIOLATION = 1008;
 
-/** Maximum characters of an inbound payload written to the log. */
+/** Maximum logged payload length. */
 const MAX_LOGGED_PAYLOAD_CHARS = 500;
 
 /**
- * Outcome of attempting to register a new session.
- *
- * - Discriminated union so impossible states cannot be represented
- * - `duplicate` keeps the existing session and closes the new socket
- * - `rejected` closes the socket without registering anything.
+ * Result of a session registration attempt.
  */
 export type RegisterSessionResult =
   { kind: 'registered' } | { kind: 'duplicate' } | { kind: 'rejected' };
 
 /**
- * Registry mapping `ClientId` to its live WebSocket session.
- *
- * - Trusts branded ids, they were validated once at the boundary
- * - Duplicate policy: reject the NEW connection, keep the existing session
- * - Each registration closes over its session, so the socket removes its own
- *   entry on `close` with no reverse lookup structure
- * - Tracker fan-out happens only on `registered`; `duplicate`/`rejected` do
- *   zero side-effect I/O so refused connections never touch presence or topics.
+ * Stores active sessions and notifies lifecycle trackers.
  */
 @Injectable()
 export class WsService {
@@ -63,10 +50,10 @@ export class WsService {
   private readonly userClients = new Map<UserId, Set<ClientId>>();
 
   /**
-   * Creates the registry with its lifecycle observers.
+   * Creates the registry with its trackers and publisher.
    *
-   * @param trackers Best-effort observers notified on connect/disconnect.
-   * @param publisher Command-capable Redis connection for user broadcasts.
+   * @param trackers Session lifecycle observers.
+   * @param publisher Redis connection for broadcasts.
    */
   constructor(
     @Inject(SESSION_TRACKERS)
@@ -76,20 +63,10 @@ export class WsService {
   ) {}
 
   /**
-   * Registers a new connection as a session.
+   * Validates, stores, and observes a new connection.
    *
-   * - closes with 1008 when `userId`/`clientId` are undefined
-   * - closes the NEW socket with 1008 when `clientId` already exists, old kept
-   * - otherwise stores the socket with a fresh `presenceToken` and fans the
-   *   connect out; tracker failures never block the socket because fan-out
-   *   settles every tracker in the background
-   * - attaches `message`/`error` listeners for lifecycle coverage, plus a
-   *   `close` listener that removes the session before fanning out the
-   *   disconnect, so disconnected clients never linger while stale closes
-   *   still carry the right token and remaining user total.
-   *
-   * @param params Connection socket plus boundary-parsed ids.
-   * @return Discriminated outcome of the registration attempt.
+   * @param params Socket and parsed connection IDs.
+   * @return Registration result.
    */
   handleConnection(params: ConnectionParams): RegisterSessionResult {
     const { socket, userId, clientId } = params;
@@ -99,10 +76,7 @@ export class WsService {
       return { kind: 'rejected' };
     }
     if (this.sessions.has(clientId)) {
-      // TODO: enforce global clientId uniqueness across replicas with a
-      // DynamoDB conditional claim on the Clients table. Today two replicas
-      // can each hold the same clientId, and a user broadcast then reaches
-      // both holders (only the excluded origin client is skipped).
+      // TODO: enforce cross-replica uniqueness with a conditional DynamoDB claim.
       this.logger.warn('Rejecting duplicate connection', clientId);
       socket.close(WS_CLOSE_POLICY_VIOLATION, 'duplicate clientId');
       return { kind: 'duplicate' };
@@ -133,17 +107,10 @@ export class WsService {
   }
 
   /**
-   * Fans one lifecycle event out to every tracker in the background.
+   * Notifies all trackers without blocking session handling.
    *
-   * - single owner of tracker error isolation: each tracker runs behind
-   *   `Promise.allSettled` via an async boundary, so sync throws become
-   *   rejections and one failing tracker never blocks siblings
-   * - rejections log at warn with the tracker index and phase, then resolve
-   * - connect counts include the new session, disconnect counts exclude the
-   *   closed one, because membership updates before this call in both paths.
-   *
-   * @param session Session the event belongs to.
-   * @param phase Whether this is a connect or a disconnect fan-out.
+   * @param session Affected session.
+   * @param phase Connect or disconnect.
    */
   private fanOut(session: Session, phase: 'connect' | 'disconnect'): void {
     const event: SessionLifecycleEvent = {
@@ -171,14 +138,11 @@ export class WsService {
   }
 
   /**
-   * Invokes one tracker behind an async boundary.
+   * Invokes one lifecycle tracker.
    *
-   * - the `async` boundary converts sync throws into rejections, so the
-   *   `allSettled` in `fanOut` sees every failure mode uniformly.
-   *
-   * @param tracker Observer to notify.
-   * @param event Session identity plus the current user total.
-   * @param phase Whether this is a connect or a disconnect notification.
+   * @param tracker Tracker to notify.
+   * @param event Lifecycle data.
+   * @param phase Connect or disconnect.
    */
   private async notifyTracker(
     tracker: SessionTracker,
@@ -193,10 +157,10 @@ export class WsService {
   }
 
   /**
-   * Records one membership of a client in its user's index.
+   * Adds a client to its user's membership index.
    *
-   * @param userId Owner of the session.
-   * @param clientId Session key to index.
+   * @param userId Session owner.
+   * @param clientId Client key.
    */
   private trackMembership(userId: UserId, clientId: ClientId): void {
     let members = this.userClients.get(userId);
@@ -208,10 +172,10 @@ export class WsService {
   }
 
   /**
-   * Removes one membership, dropping the user's entry when it empties.
+   * Removes a client from its user's membership index.
    *
-   * @param userId Owner of the session.
-   * @param clientId Session key to remove.
+   * @param userId Session owner.
+   * @param clientId Client key.
    */
   private untrackMembership(userId: UserId, clientId: ClientId): void {
     const members = this.userClients.get(userId);
@@ -225,53 +189,40 @@ export class WsService {
   }
 
   /**
-   * Counts live sessions for one user from the membership index.
+   * Counts a user's local sessions.
    *
-   * - O(1) read of the index maintained alongside `sessions`, so reconnect
-   *   storms never degrade into quadratic scans.
-   *
-   * @param userId Owner whose sessions to count.
-   * @return Live local sessions for the user.
+   * @param userId User to count.
+   * @return Number of local sessions.
    */
   private countUserSessions(userId: UserId): number {
     return this.userClients.get(userId)?.size ?? 0;
   }
 
   /**
-   * Retrieves a session by `ClientId`.
+   * Looks up a session by client ID.
    *
-   * - direct `Map.get` passthrough for routing sends to the right socket.
-   *
-   * @param clientId Unique session key to look up.
-   * @return The session, or undefined when no session exists.
+   * @param clientId Session key.
+   * @return The session, if present.
    */
   getSession(clientId: ClientId): Session | undefined {
     return this.sessions.get(clientId);
   }
 
   /**
-   * Returns the number of currently connected sessions.
+   * Returns the active session count.
    *
-   * - reads `sessions.size` without side effects.
-   *
-   * @return Count of active sessions.
+   * @return Number of sessions.
    */
   getSessionCount(): number {
     return this.sessions.size;
   }
 
   /**
-   * Sends a JSON message to one client.
+   * Sends a JSON message to a connected client.
    *
-   * - returns false when no session exists for `clientId`
-   * - returns false when the socket is not currently open
-   * - returns false when the payload cannot be serialized
-   * - otherwise sends via `session.socket.send(...)` and returns true
-   * - cheap guards run before serialization so misses never pay it.
-   *
-   * @param clientId Unique session key of the recipient.
-   * @param message Payload to serialize to JSON and send.
-   * @return True when the message was sent.
+   * @param clientId Recipient session key.
+   * @param message Payload to send.
+   * @return Whether the message was sent.
    */
   sendToClient(clientId: ClientId, message: unknown): boolean {
     const session = this.sessions.get(clientId);
@@ -303,22 +254,12 @@ export class WsService {
   }
 
   /**
-   * Broadcasts a message to every session of a user on every replica.
+   * Publishes a broadcast to a user's sessions across replicas.
    *
-   * - publishes one `{ payload, excludeClientId? }` envelope to
-   *   `user:{userId}`; each replica's `UserTopicService` delivers it to its
-   *   own local sessions via `sendToLocalUser`
-   * - `excludeClientId` skips the origin client so a broadcast never echoes
-   *   back to its sender; server-initiated sends omit it and reach everyone
-   * - at-most-once transport: publishing to zero subscribers resolves
-   *   without delivery, matching Redis pub/sub semantics
-   * - publish failures log at warn and reject to the caller instead of
-   *   resolving quietly, so no failure looks like a delivery.
-   *
-   * @param userId Owner of the recipient sessions.
-   * @param message Payload to serialize into the envelope and broadcast.
-   * @param excludeClientId Origin client to skip on delivery, if any.
-   * @return Resolves when the publish settles.
+   * @param userId Recipient user.
+   * @param message Payload to broadcast.
+   * @param excludeClientId Optional origin client to exclude.
+   * @return Resolves when publishing completes.
    */
   async sendToUser(
     userId: UserId,
@@ -346,20 +287,12 @@ export class WsService {
   }
 
   /**
-   * Delivers a message to every local session of a user.
+   * Delivers a message to a user's local sessions.
    *
-   * - single local-delivery loop behind the distributed fan-out: the only
-   *   caller outside this service is the topic subscriber's delivery hook
-   * - reads the `userClients` membership index, so users without local
-   *   sessions resolve to 0 without work
-   * - skips `excludeClientId` so broadcasts never echo to their sender
-   * - per-client misses (closed sockets, unserializable payloads) are
-   *   skipped via `sendToClient` false semantics and never throw.
-   *
-   * @param userId Owner of the recipient sessions.
-   * @param message Payload to serialize to JSON and send.
-   * @param excludeClientId Origin client to skip on delivery, if any.
-   * @return Count of local sessions the message was sent to.
+   * @param userId Recipient user.
+   * @param message Payload to send.
+   * @param excludeClientId Optional origin client to exclude.
+   * @return Number of sessions reached.
    */
   sendToLocalUser(
     userId: UserId,
@@ -383,22 +316,19 @@ export class WsService {
   }
 
   /**
-   * Observes an inbound message from a registered client.
+   * Parses an inbound message and routes valid sends.
    *
-   * - lifecycle hook kept minimal by design, receipt is logged at debug level
-   * - payload preview is truncated so one frame cannot flood the logs.
-   *
-   * @param userId Owner of the session that sent the message.
-   * @param clientId Owner of the socket that sent the message.
-   * @param data Raw message payload from the socket.
-   * @return Nothing, the payload is only logged.
+   * @param userId Sending user.
+   * @param clientId Sending client.
+   * @param data Raw socket payload.
+   * @return Nothing; delivery failures are reported with a NACK.
    */
   private handleMessage(
     userId: UserId,
     clientId: ClientId,
     data: unknown,
   ): void {
-    const raw = String(data);
+    const raw = typeof data === 'string' ? data : String(data);
     const preview =
       raw.length > MAX_LOGGED_PAYLOAD_CHARS
         ? `${raw.slice(0, MAX_LOGGED_PAYLOAD_CHARS)}… (truncated ${raw.length} chars)`
@@ -406,20 +336,56 @@ export class WsService {
     this.logger.debug(
       `Message received from ${userId} #${clientId}: ${preview}`,
     );
+    const frame = parseInboundFrame(data);
+    if (frame.kind === 'ignore') {
+      this.logger.debug(
+        `Ignoring message from ${userId} #${clientId}: ${frame.reason}`,
+      );
+      return;
+    }
+    if (frame.kind === 'invalid') {
+      this.logger.warn(
+        `Dropping sendMessage with invalid target from ${userId} #${clientId}: ${frame.reason}`,
+      );
+      this.sendNack(clientId, frame.reason);
+      return;
+    }
+    if (!canSendTo(userId, frame.target)) {
+      this.logger.warn(
+        `Dropping sendMessage not allowed from ${userId} #${clientId}`,
+      );
+      this.sendNack(clientId, 'not allowed');
+      return;
+    }
+    void this.sendToUser(frame.target, frame.message, clientId).catch(
+      (err: unknown) => {
+        const detail = err instanceof Error ? err.message : 'unknown error';
+        this.logger.warn(
+          `Failed to deliver message from ${userId} #${clientId}: ${detail}`,
+        );
+        this.sendNack(clientId, 'delivery failed');
+      },
+    );
   }
 
   /**
-   * Observes a socket error for a registered client.
+   * Sends a rejection frame to the origin client.
    *
-   * - oversize frames rejected by the transport `maxPayload` log at warn
-   *   with identity and the close code, never with payload bytes
-   * - other errors log at error level as before
-   * - the session stays until the socket `close` listener removes it.
+   * @param clientId Client to notify.
+   * @param reason Rejection reason.
+   * @return Nothing.
+   */
+  private sendNack(clientId: ClientId, reason: string): void {
+    this.sendToClient(clientId, { op: SEND_MESSAGE_ERROR_OP, reason });
+  }
+
+  /**
+   * Logs socket errors, distinguishing oversized frames.
    *
-   * @param userId Owner of the session that errored.
-   * @param clientId Owner of the socket that errored.
-   * @param err Raw error value from the socket.
-   * @return Nothing, the error is only logged.
+   * @param userId Affected user.
+   * @param clientId Affected client.
+   * @param err Socket error.
+   * @return Nothing.
    */
   private handleError(userId: UserId, clientId: ClientId, err: unknown): void {
     if (isWsPayloadTooBigError(err)) {

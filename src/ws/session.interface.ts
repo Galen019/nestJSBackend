@@ -43,6 +43,94 @@ export interface Session {
 /** DI token for the ordered session-tracker fan-out list. */
 export const SESSION_TRACKERS = 'SESSION_TRACKERS';
 
+/** Client-to-server op that routes one message to another user's sessions. */
+export const SEND_MESSAGE_OP = 'sendMessage' as const;
+
+/** Server-to-client op that reports a rejected inbound frame. */
+export const SEND_MESSAGE_ERROR_OP = 'error' as const;
+
+/**
+ * Wire shape of a client `sendMessage` frame.
+ */
+export interface SendMessageFrame {
+  op: typeof SEND_MESSAGE_OP;
+  target: string;
+  message: unknown;
+}
+
+/**
+ * Wire shape of a server rejection for an inbound frame.
+ */
+export interface SendMessageErrorFrame {
+  op: typeof SEND_MESSAGE_ERROR_OP;
+  reason: string;
+}
+
+/**
+ * Outcome of parsing one inbound socket frame.
+ *
+ * - `send` carries a validated target plus the verbatim payload
+ * - `ignore` drops noise with a debug log and no client feedback
+ * - `invalid` drops a client error with a warn log plus a NACK.
+ */
+export type InboundFrame =
+  | { kind: 'send'; target: UserId; message: unknown }
+  | { kind: 'ignore'; reason: string }
+  | { kind: 'invalid'; reason: string };
+
+/**
+ * Parses one raw socket payload into its routing decision.
+ *
+ * - non-JSON, non-object, unknown op, and missing message are `ignore`
+ * - blank target is `invalid` so the caller warns and NACKs
+ * - mirrors `parseUserTopicEnvelope` as a value, never a throw.
+ *
+ * @param raw Raw message payload from the socket.
+ * @return The routing decision for the caller to switch on.
+ */
+export function parseInboundFrame(raw: unknown): InboundFrame {
+  const text = typeof raw === 'string' ? raw : String(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    return { kind: 'ignore', reason: 'non-JSON' };
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return { kind: 'ignore', reason: 'non-object' };
+  }
+  const record: Record<string, unknown> = parsed as Record<string, unknown>;
+  if (record.op !== SEND_MESSAGE_OP) {
+    return { kind: 'ignore', reason: 'unknown op' };
+  }
+  const target = parseUserId(record.target);
+  if (target === undefined) {
+    return { kind: 'invalid', reason: 'invalid target' };
+  }
+  if (!('message' in record) || record.message === undefined) {
+    return { kind: 'ignore', reason: 'missing message' };
+  }
+  return { kind: 'send', target, message: record.message };
+}
+
+/**
+ * Decides whether one user may send to another.
+ *
+ * - open DM is intentional for v1: any authenticated client may message any
+ *   user, and the registry stays the single enforcement point
+ * - keep future ACL, block-list, or rate-limit checks here so no new branch
+ *   spreads into the registry when the policy tightens.
+ *
+ * @param sender Owner of the sending session.
+ * @param target Owner of the recipient sessions.
+ * @return True when the send may proceed.
+ */
+export function canSendTo(sender: UserId, target: UserId): boolean {
+  void sender;
+  void target;
+  return true;
+}
+
 /**
  * Session lifecycle data shared with trackers.
  */
