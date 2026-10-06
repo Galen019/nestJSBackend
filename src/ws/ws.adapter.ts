@@ -1,23 +1,9 @@
-/**
- * WebSocket server adapter enforcing the transport payload limit.
- *
- * - Subclasses Nest's `WsAdapter` so `maxPayload` reaches the `ws` server
- * - Single owner of the `ws` construction policy for `/ws`
- * - Forces the resolved limit over any incoming option, one decision point
- * - Filters oversize socket errors so `WsService` stays the single owner
- *   of socket error logging; only server-level errors log here.
- */
 import { WsAdapter } from '@nestjs/platform-ws';
 import { type Server as WsServer } from 'ws';
 import { getWsMaxPayload, isWsPayloadTooBigError } from './ws.constants';
 
 /**
- * `WsAdapter` with an enforced `maxPayload` transport boundary.
- *
- * - `create()` injects the validated limit so oversize frames close with 1009
- *   before gateway or service handlers ever see them
- * - `bindErrorHandler()` silences oversize socket errors already owned by
- *   the service warn path, server errors still log at error level.
+ * `WsAdapter` that enforces the payload limit and logs server errors.
  */
 export class WsServerAdapter extends WsAdapter {
   /**

@@ -18,6 +18,7 @@ import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import type { IncomingMessage } from 'node:http';
+import { parseEnvFlag } from './common/env';
 
 /**
  * Default OTLP/gRPC traces endpoint (in-compose Jaeger).
@@ -61,17 +62,12 @@ let sdk: NodeSDK | undefined;
 let started = false;
 let shutdownHookRegistered = false;
 
-/** Values that enable tracing, including blank (default-on). */
-const ENABLED_VALUES: ReadonlySet<string> = new Set(['', 'true', '1', 'yes']);
-
-/** Values that explicitly disable tracing. */
-const DISABLED_VALUES: ReadonlySet<string> = new Set(['false', '0', 'no']);
-
 /**
  * Parses the `OTEL_ENABLED` toggle.
  *
- * - `undefined`/blank means enabled (code default true, tests force false via env)
- * - `true`/`1`/`yes` mean enabled, `false`/`0`/`no` mean disabled
+ * - delegates to the canonical `parseEnvFlag` with default-on semantics:
+ *   `undefined`/blank means enabled, `true`/`1`/`yes` mean enabled,
+ *   `false`/`0`/`no` mean disabled
  * - anything else warns and stays enabled so a typo cannot silently kill
  *   tracing in one environment while it runs in another.
  *
@@ -79,17 +75,11 @@ const DISABLED_VALUES: ReadonlySet<string> = new Set(['false', '0', 'no']);
  * @return False only for an explicit disable string.
  */
 export function parseEnabled(value: string | undefined): boolean {
-  const normalized = value?.trim().toLowerCase() ?? '';
-  if (ENABLED_VALUES.has(normalized)) {
-    return true;
-  }
-  if (DISABLED_VALUES.has(normalized)) {
-    return false;
-  }
-  console.warn(
-    `[tracing] unknown OTEL_ENABLED "${value}", defaulting to enabled`,
-  );
-  return true;
+  return parseEnvFlag(value, {
+    defaultValue: true,
+    warnOnUnknown: true,
+    label: 'OTEL_ENABLED',
+  });
 }
 
 /**

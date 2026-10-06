@@ -1,11 +1,5 @@
 /**
- * WebSocket domain types.
- *
- * - Branded `UserId`/`ClientId` validated once at the boundary
- * - Minimal `SessionSocket` surface the registry needs
- * - `Session` shape stored in the registry keyed by `clientId`
- * - `SessionTracker` observers fanned out on connect/disconnect, so new
- *   side effects wire in via `SESSION_TRACKERS` without touching the registry
+ * WebSocket domain types and gateway identity helpers.
  */
 
 /** User identity, validated once at the connection boundary. */
@@ -15,10 +9,7 @@ export type UserId = string & { readonly __brand: 'UserId' };
 export type ClientId = string & { readonly __brand: 'ClientId' };
 
 /**
- * Minimal socket surface the session registry needs.
- *
- * - Real `ws` sockets satisfy this structurally, fakes do too without casts
- * - Keeps the registry decoupled from the full driver class.
+ * Socket operations used by the session registry.
  */
 export interface SessionSocket {
   readonly readyState: number;
@@ -31,10 +22,7 @@ export interface SessionSocket {
 }
 
 /**
- * Parameters for registering one connection.
- *
- * - Object args so `userId`/`clientId` order is self-documenting
- * - Ids stay `undefined` when the upgrade URL carries none, service rejects those.
+ * Identity and socket data for a connection.
  */
 export interface ConnectionParams {
   socket: SessionSocket;
@@ -43,12 +31,7 @@ export interface ConnectionParams {
 }
 
 /**
- * Live WebSocket session for one connected client.
- *
- * - `socket` is the per-connection WebSocket instance
- * - `presenceToken` is a per-connection unique token mirrored into the
- *   `Clients` presence row, so a stale socket-close delete cannot remove a
- *   fresh row written by a later reconnect on the same `clientId`.
+ * Active WebSocket session, including its presence token.
  */
 export interface Session {
   userId: UserId;
@@ -61,12 +44,7 @@ export interface Session {
 export const SESSION_TRACKERS = 'SESSION_TRACKERS';
 
 /**
- * Lifecycle event fanned out to every session tracker.
- *
- * - `token` is the per-connection token minted at registration
- * - `userSessionCount` is the local session total for `userId` after the
- *   event: connect includes the new session (first reports 1), disconnect
- *   excludes the closed one (last reports 0).
+ * Session lifecycle data shared with trackers.
  */
 export interface SessionLifecycleEvent {
   userId: UserId;
@@ -76,85 +54,152 @@ export interface SessionLifecycleEvent {
 }
 
 /**
- * Observer of WebSocket session lifecycle.
- *
- * - `WsService` owns the sessions and notifies every tracker on
- *   connect/disconnect, so tracker N+1 is a module-wiring line
- * - handlers must never throw and never block: failures are swallowed
- *   internally and async work runs fire-and-forget, so one slow tracker
- *   cannot stall registration or teardown.
+ * Handles session connect and disconnect events.
  */
 export interface SessionTracker {
   /**
    * Observes a newly registered session.
    *
    * @param event Session identity plus the post-connect user total.
+   * @return Resolves when the tracker has observed the connect.
    */
-  handleConnect(event: SessionLifecycleEvent): void;
+  handleConnect(event: SessionLifecycleEvent): Promise<void>;
   /**
    * Observes a closed session.
    *
    * @param event Session identity plus the remaining user total.
+   * @return Resolves when the tracker has observed the disconnect.
    */
-  handleDisconnect(event: SessionLifecycleEvent): void;
+  handleDisconnect(event: SessionLifecycleEvent): Promise<void>;
 }
 
 /**
- * Parses a raw `userId` query value into the domain type.
+ * Returns a non-blank string value unchanged.
  *
- * - boundary parser, rejects missing, non-string, empty, and blank values
- * - the brand cast is earned by the check above it.
- *
- * @param value Raw query value from the upgrade URL.
- * @return The branded id, or undefined when the value is unusable.
+ * @param value Raw upgrade query value.
+ * @return The value, or undefined if blank or not a string.
  */
-export function parseUserId(value: unknown): UserId | undefined {
-  if (!isNonBlankString(value)) {
-    return undefined;
-  }
-  return value as UserId;
-}
-
-/**
- * Parses a raw `clientId` query value into the domain type.
- *
- * - boundary parser, rejects missing, non-string, empty, and blank values
- * - the brand cast is earned by the check above it.
- *
- * @param value Raw query value from the upgrade URL.
- * @return The branded id, or undefined when the value is unusable.
- */
-export function parseClientId(value: unknown): ClientId | undefined {
-  if (!isNonBlankString(value)) {
-    return undefined;
-  }
-  return value as ClientId;
-}
-
-/**
- * Parses the raw `token` query value.
- *
- * - boundary parser, rejects missing, non-string, empty, and blank values
- * - the token itself is verified later, this only checks presence.
- *
- * @param value Raw query value from the upgrade URL.
- * @return The token string, or undefined when unusable.
- */
-export function parseToken(value: unknown): string | undefined {
-  if (!isNonBlankString(value)) {
+export function parseNonBlank(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return undefined;
   }
   return value;
 }
 
 /**
- * Checks that a value is a non-blank string.
+ * Parses a raw user ID query value.
  *
- * - shared narrowing behind the id parsers, rejects whitespace-only strings.
- *
- * @param value Candidate identity value.
- * @return True when the value is a usable non-blank string.
+ * @param value Raw upgrade query value.
+ * @return A branded ID, or undefined if unusable.
  */
-function isNonBlankString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
+export function parseUserId(value: unknown): UserId | undefined {
+  const parsed = parseNonBlank(value);
+  return parsed === undefined ? undefined : (parsed as UserId);
+}
+
+/**
+ * Parses a raw client ID query value.
+ *
+ * @param value Raw upgrade query value.
+ * @return A branded ID, or undefined if unusable.
+ */
+export function parseClientId(value: unknown): ClientId | undefined {
+  const parsed = parseNonBlank(value);
+  return parsed === undefined ? undefined : (parsed as ClientId);
+}
+
+/**
+ * Parses a non-blank raw token value; verification happens later.
+ *
+ * @param value Raw upgrade query value.
+ * @return The token, or undefined if unusable.
+ */
+export function parseToken(value: unknown): string | undefined {
+  return parseNonBlank(value);
+}
+
+/**
+ * Identity parsed from a WebSocket upgrade URL.
+ */
+export interface GatewayIdentity {
+  userId: UserId | undefined;
+  clientId: ClientId | undefined;
+  token: string | undefined;
+}
+
+/**
+ * Gateway authorization result.
+ */
+export type ResolveIdentityResult =
+  | { kind: 'authorized'; userId: UserId; clientId: ClientId }
+  | { kind: 'rejected'; reason: string };
+
+/**
+ * Parses identity fields from WebSocket upgrade arguments.
+ *
+ * @param args Raw arguments from the WebSocket adapter.
+ * @return Parsed IDs and raw token, or undefined fields if unavailable.
+ */
+export function extractGatewayIdentity(args: unknown[]): GatewayIdentity {
+  const request = args[0];
+  if (!hasUpgradeUrl(request) || request.url === undefined) {
+    return { userId: undefined, clientId: undefined, token: undefined };
+  }
+  try {
+    const params = new URL(request.url, 'http://localhost').searchParams;
+    return {
+      userId: parseUserId(params.get('userId')),
+      clientId: parseClientId(params.get('clientId')),
+      token: parseToken(params.get('token')),
+    };
+  } catch {
+    return { userId: undefined, clientId: undefined, token: undefined };
+  }
+}
+
+/**
+ * Verifies the token and checks its subject matches the requested user.
+ *
+ * @param identity Parsed upgrade identity.
+ * @param verify Token verifier that throws when invalid.
+ * @return Authorization result for the gateway.
+ */
+export function resolveGatewayIdentity(
+  identity: GatewayIdentity,
+  verify: (token: string) => { sub?: string },
+): ResolveIdentityResult {
+  const { userId, clientId, token } = identity;
+  if (token === undefined) {
+    return { kind: 'rejected', reason: 'missing token' };
+  }
+  let sub: string | undefined;
+  try {
+    sub = verify(token).sub;
+  } catch {
+    return { kind: 'rejected', reason: 'invalid token' };
+  }
+  if (sub === undefined) {
+    return { kind: 'rejected', reason: 'missing token subject' };
+  }
+  if (userId === undefined || clientId === undefined) {
+    return { kind: 'rejected', reason: 'missing userId/clientId' };
+  }
+  if (sub !== userId) {
+    return { kind: 'rejected', reason: 'token subject mismatch' };
+  }
+  return { kind: 'authorized', userId, clientId };
+}
+
+/**
+ * Checks whether a value has a valid optional URL field.
+ *
+ * @param value Candidate upgrade request.
+ * @return Whether its URL is a string or undefined.
+ */
+function hasUpgradeUrl(value: unknown): value is { url?: string } {
+  if (typeof value !== 'object' || value === null || !('url' in value)) {
+    return false;
+  }
+  const url = value.url;
+  return url === undefined || typeof url === 'string';
 }

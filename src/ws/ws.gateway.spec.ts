@@ -2,8 +2,8 @@
  * Unit suite for WsGateway with mocked WsService and JWT verifier.
  *
  * - connection: parses userId/clientId/token and delegates on valid token
- * - auth: closes 1008 on missing/invalid token or sub mismatch, no delegation
- * - missing URL: delegates undefined ids path still requires token first.
+ * - auth: closes 1008 on missing/invalid token, missing sub, or sub mismatch, no delegation
+ * - missing ids: rejected in the gateway with 1008, never delegated.
  */
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -50,7 +50,7 @@ describe('WsGateway', () => {
   /**
    * Builds a testing module with WsService and verifier mocked.
    *
-   * - verifier resolves `{ iss, aud, exp }` by default, no sub binding
+   * - verifier resolves a payload with `sub` bound to `user-123` by default
    * - tracks the module so it can be closed after each test.
    */
   async function compile(): Promise<void> {
@@ -61,6 +61,7 @@ describe('WsGateway', () => {
       iss: 'test-issuer',
       aud: 'test-audience',
       exp: 9999999999,
+      sub: 'user-123',
     }));
     module = await Test.createTestingModule({
       providers: [
@@ -138,23 +139,31 @@ describe('WsGateway', () => {
     expect(service.handleConnection).not.toHaveBeenCalled();
   });
 
-  it('delegates undefined ids when the URL has no query params (auth passes first)', () => {
-    const { socket } = createSocketStub();
+  it('closes with 1008 when the token carries no subject', () => {
     verify.mockReturnValue({
       iss: 'test-issuer',
       aud: 'test-audience',
       exp: 9999999999,
     });
+    const { socket, close } = createSocketStub();
+
+    gateway.handleConnection(socket, {
+      url: '/ws?userId=user-123&clientId=client-456&token=good',
+    });
+
+    expect(close).toHaveBeenCalledWith(1008, expect.anything());
+    expect(service.handleConnection).not.toHaveBeenCalled();
+  });
+
+  it('closes with 1008 when userId/clientId are missing despite a valid token', () => {
+    const { socket, close } = createSocketStub();
 
     gateway.handleConnection(socket, {
       url: '/ws?token=good',
     });
 
-    expect(service.handleConnection).toHaveBeenCalledWith({
-      socket,
-      userId: undefined,
-      clientId: undefined,
-    });
+    expect(close).toHaveBeenCalledWith(1008, expect.anything());
+    expect(service.handleConnection).not.toHaveBeenCalled();
   });
 
   it('closes when no upgrade URL is present', () => {

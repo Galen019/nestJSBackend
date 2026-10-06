@@ -1,0 +1,9 @@
+# Isolate the lab mirror (mirrors docker-compose.yml service set).
+# Apply first: kubectl apply -f k8s/namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+    app.kubernetes.io/managed-by: manual

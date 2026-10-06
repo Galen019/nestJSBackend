@@ -3,8 +3,12 @@
  *
  * - connect: session added with userId/clientId/socket/presenceToken
  * - trackers: registered fans out connect with the token and user total, never on duplicate/rejected
+ * - isolation: a rejecting or throwing tracker never blocks siblings, failures log at warn
  * - lookup: getSession returns the entry, getSessionCount tracks active sessions
  * - send: routes JSON through the right socket, false for unknown/closed clients
+ * - broadcast: sendToUser publishes one envelope to user:{userId}, failures
+ *   warn and reject; sendToLocalUser fans out to every local session of the
+ *   user except the excluded origin client
  * - close: the registration close listener removes the session and fans out disconnect by token
  * - duplicate: new socket closed with 1008, existing session kept
  * - message: inbound payload is logged at debug with userId/clientId attribution
@@ -13,108 +17,27 @@ import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
-import { requireClientId } from '../../test/ws-test.helper';
+import {
+  createPublisherFake,
+  type PublisherFake,
+} from '../../test/publisher-test.helper';
+import {
+  createSocketFake,
+  fireClose,
+  fireError,
+  fireMessage,
+  requireClientId,
+  requireUserId,
+} from '../../test/ws-test.helper';
+import { REDIS_CLIENT } from '../redis/redis.constants';
 import {
   parseClientId,
   parseUserId,
   SESSION_TRACKERS,
   type SessionLifecycleEvent,
-  type SessionSocket,
+  type SessionTracker,
 } from './session.interface';
 import { WS_CLOSE_POLICY_VIOLATION, WsService } from './ws.service';
-
-/**
- * Creates a fake socket satisfying the registry's structural socket type.
- *
- * - `satisfies` validates the shape without widening or casting
- * - defaults `readyState` to OPEN so sends succeed
- * - stubs `on`/`send`/`close` with vitest mocks.
- *
- * @return Fake socket plus its mocks.
- */
-function createSocketFake() {
-  const on =
-    vi.fn<
-      (
-        event: 'message' | 'error' | 'close',
-        listener: (data: unknown) => void,
-      ) => void
-    >();
-  const send = vi.fn<(payload: string) => void>();
-  const close = vi.fn<(code?: number, reason?: string) => void>();
-  const initialState: number = WebSocket.OPEN;
-  const socket = {
-    readyState: initialState,
-    on,
-    send,
-    close,
-  } satisfies SessionSocket;
-  return { socket, mocks: { on, send, close } };
-}
-
-/**
- * Fires the captured `close` listener of a fake socket.
- *
- * - simulates the driver emitting `close` after the socket disconnects
- * - fails fast when registration attached no close listener.
- *
- * @param fake Fake created by `createSocketFake`.
- */
-function fireClose(fake: ReturnType<typeof createSocketFake>): void {
-  const closeCall = fake.mocks.on.mock.calls.find(
-    (call) => call[0] === 'close',
-  );
-  if (closeCall === undefined) {
-    throw new Error('Expected a close listener');
-  }
-  closeCall[1](undefined);
-}
-
-/**
- * Fires the captured `message` listener of a fake socket.
- *
- * - simulates the driver emitting `message` with the given payload
- * - fails fast when registration attached no message listener.
- *
- * @param fake Fake created by `createSocketFake`.
- * @param payload Payload to pass to the message listener.
- * @return Nothing, the listener is invoked synchronously.
- */
-function fireMessage(
-  fake: ReturnType<typeof createSocketFake>,
-  payload: unknown,
-): void {
-  const messageCall = fake.mocks.on.mock.calls.find(
-    (call) => call[0] === 'message',
-  );
-  if (messageCall === undefined) {
-    throw new Error('Expected a message listener');
-  }
-  messageCall[1](payload);
-}
-
-/**
- * Fires the captured `error` listener of a fake socket.
- *
- * - simulates the driver emitting `error` with the given value
- * - fails fast when registration attached no error listener.
- *
- * @param fake Fake created by `createSocketFake`.
- * @param err Error value to pass to the error listener.
- * @return Nothing, the listener is invoked synchronously.
- */
-function fireError(
-  fake: ReturnType<typeof createSocketFake>,
-  err: unknown,
-): void {
-  const errorCall = fake.mocks.on.mock.calls.find(
-    (call) => call[0] === 'error',
-  );
-  if (errorCall === undefined) {
-    throw new Error('Expected an error listener');
-  }
-  errorCall[1](err);
-}
 
 /**
  * Creates a `ws` oversize error shaped like the receiver rejection.
@@ -133,30 +56,43 @@ function createOversizeError(): Error {
 describe('WsService', () => {
   let service: WsService;
   let module: TestingModule | undefined;
+  let publisher: PublisherFake;
   let tracker: {
     handleConnect: ReturnType<
-      typeof vi.fn<(event: SessionLifecycleEvent) => void>
+      typeof vi.fn<(event: SessionLifecycleEvent) => Promise<void>>
     >;
     handleDisconnect: ReturnType<
-      typeof vi.fn<(event: SessionLifecycleEvent) => void>
+      typeof vi.fn<(event: SessionLifecycleEvent) => Promise<void>>
     >;
   };
 
   /**
    * Builds a testing module with a fresh WsService.
    *
-   * - provides a mocked tracker list so no presence or Redis calls happen
+   * - provides a mocked tracker list so no presence or topic calls happen
+   * - provides a mocked publisher so broadcasts never touch Redis
+   * - extra trackers run before the observed one to prove failure isolation
    * - tracks the module so it can be closed after each test.
+   *
+   * @param extraTrackers Additional trackers placed before the observed one.
    */
-  async function compile(): Promise<WsService> {
+  async function compile(
+    extraTrackers: SessionTracker[] = [],
+  ): Promise<WsService> {
     tracker = {
-      handleConnect: vi.fn<(event: SessionLifecycleEvent) => void>(),
-      handleDisconnect: vi.fn<(event: SessionLifecycleEvent) => void>(),
+      handleConnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
+      handleDisconnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
     };
+    publisher = createPublisherFake();
     module = await Test.createTestingModule({
       providers: [
         WsService,
-        { provide: SESSION_TRACKERS, useValue: [tracker] },
+        { provide: SESSION_TRACKERS, useValue: [...extraTrackers, tracker] },
+        { provide: REDIS_CLIENT, useValue: publisher },
       ],
     }).compile();
     return module.get<WsService>(WsService);
@@ -666,5 +602,214 @@ describe('WsService', () => {
 
     expect(tracker.handleConnect).not.toHaveBeenCalled();
     expect(tracker.handleDisconnect).not.toHaveBeenCalled();
+  });
+
+  it('isolates a rejecting tracker so siblings still observe the connect', async () => {
+    await module?.close();
+    const failing = {
+      handleConnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockRejectedValue(new Error('tracker down')),
+      handleDisconnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
+    };
+    service = await compile([failing]);
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const { socket } = createSocketFake();
+
+    service.handleConnection({
+      socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+
+    expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
+    expect(tracker.handleConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123', userSessionCount: 1 }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Session tracker 0 connect failed'),
+        );
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it('isolates a synchronously throwing tracker into a logged rejection', async () => {
+    await module?.close();
+    const throwing = {
+      handleConnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockImplementation(() => {
+          throw new Error('sync boom');
+        }),
+      handleDisconnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
+    };
+    service = await compile([throwing]);
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const { socket } = createSocketFake();
+
+    service.handleConnection({
+      socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+
+    expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
+    await vi.waitFor(
+      () => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Session tracker 0 connect failed'),
+        );
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it('skips serialization when no session exists', () => {
+    const stringifySpy = vi.spyOn(JSON, 'stringify');
+    try {
+      expect(
+        service.sendToClient(requireClientId('ghost'), { type: 'MESSAGE' }),
+      ).toBe(false);
+      expect(stringifySpy).not.toHaveBeenCalled();
+    } finally {
+      stringifySpy.mockRestore();
+    }
+  });
+
+  it('publishes a user broadcast to user:{userId}', async () => {
+    await service.sendToUser(requireUserId('user-123'), { type: 'PING' });
+
+    expect(publisher.publish).toHaveBeenCalledTimes(1);
+    expect(publisher.publish).toHaveBeenCalledWith(
+      'user:user-123',
+      JSON.stringify({
+        payload: { type: 'PING' },
+      }),
+    );
+  });
+
+  it('carries the excluded origin client in the broadcast envelope', async () => {
+    await service.sendToUser(
+      requireUserId('user-123'),
+      { type: 'PING' },
+      requireClientId('client-1'),
+    );
+
+    expect(publisher.publish).toHaveBeenCalledWith(
+      'user:user-123',
+      JSON.stringify({
+        payload: { type: 'PING' },
+        excludeClientId: 'client-1',
+      }),
+    );
+  });
+
+  it('warns and rejects when the broadcast publish fails', async () => {
+    publisher.publish.mockRejectedValueOnce(new Error('READONLY'));
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      service.sendToUser(requireUserId('user-123'), { type: 'PING' }),
+    ).rejects.toThrow('READONLY');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to broadcast to user:user-123'),
+    );
+  });
+
+  it('rejects unserializable broadcast payloads without publishing', async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      service.sendToUser(requireUserId('user-123'), circular),
+    ).rejects.toThrow('not serializable');
+    expect(publisher.publish).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Dropping unserializable broadcast'),
+      expect.anything(),
+    );
+  });
+
+  it('delivers a local broadcast to every session of the user', () => {
+    const first = createSocketFake();
+    const second = createSocketFake();
+    const other = createSocketFake();
+    service.handleConnection({
+      socket: first.socket,
+      userId: parseUserId('user-1'),
+      clientId: parseClientId('client-1'),
+    });
+    service.handleConnection({
+      socket: second.socket,
+      userId: parseUserId('user-1'),
+      clientId: parseClientId('client-2'),
+    });
+    service.handleConnection({
+      socket: other.socket,
+      userId: parseUserId('user-2'),
+      clientId: parseClientId('client-3'),
+    });
+
+    const delivered = service.sendToLocalUser(requireUserId('user-1'), {
+      type: 'PING',
+    });
+
+    expect(delivered).toBe(2);
+    expect(first.mocks.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'PING' }),
+    );
+    expect(second.mocks.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'PING' }),
+    );
+    expect(other.mocks.send).not.toHaveBeenCalled();
+  });
+
+  it('skips the excluded origin client on local delivery', () => {
+    const first = createSocketFake();
+    const second = createSocketFake();
+    service.handleConnection({
+      socket: first.socket,
+      userId: parseUserId('user-1'),
+      clientId: parseClientId('client-1'),
+    });
+    service.handleConnection({
+      socket: second.socket,
+      userId: parseUserId('user-1'),
+      clientId: parseClientId('client-2'),
+    });
+
+    const delivered = service.sendToLocalUser(
+      requireUserId('user-1'),
+      { type: 'PING' },
+      requireClientId('client-1'),
+    );
+
+    expect(delivered).toBe(1);
+    expect(first.mocks.send).not.toHaveBeenCalled();
+    expect(second.mocks.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: 'PING' }),
+    );
+  });
+
+  it('delivers to nobody when the user holds no local sessions', () => {
+    expect(
+      service.sendToLocalUser(requireUserId('ghost'), { type: 'PING' }),
+    ).toBe(0);
   });
 });
