@@ -8,6 +8,8 @@
  * - duplicate: new socket closed, existing session kept
  * - missing params: socket closed with 1008, nothing registered
  * - message: inbound client payload is written to the debug log
+ * - sendMessage: `{ op, target, message }` frames route via `sendToUser`
+ *   excluding the origin client, socket stays open
  * - topics: first client subscribes `user:{userId}`, last disconnect unsubscribes
  * - limit: oversize frames close with 1009, session removed, peers
  *   unaffected, warn-only logging with no error log
@@ -19,9 +21,18 @@ import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { AppModule } from './../src/app.module';
 import { DynamoService } from './../src/dynamo/dynamo.service';
+import { REDIS_CLIENT } from './../src/redis/redis.constants';
 import { RedisService } from './../src/redis/redis.service';
-import { channelFor } from './../src/user-topics/user-topic.message';
+import {
+  channelFor,
+  parseUserTopicEnvelope,
+  userIdFromChannel,
+} from './../src/user-topics/user-topic.message';
 import { USER_TOPIC_SUBSCRIBER } from './../src/user-topics/user-topic.service';
+import {
+  SEND_MESSAGE_ERROR_OP,
+  SEND_MESSAGE_OP,
+} from './../src/ws/session.interface';
 import { WsServerAdapter } from './../src/ws/ws.adapter';
 import { DEFAULT_WS_MAX_PAYLOAD_BYTES } from './../src/ws/ws.constants';
 import { WsService } from './../src/ws/ws.service';
@@ -332,6 +343,70 @@ describe('WsGateway (e2e)', () => {
       },
       { timeout: 3000 },
     );
+  });
+
+  it('delivers a sendMessage frame to peers excluding the origin', async () => {
+    const publisher = app.get(REDIS_CLIENT) as {
+      publish: (channel: string, envelope: string) => Promise<number>;
+    };
+    vi.spyOn(publisher, 'publish').mockImplementation(
+      async (channel: string, envelope: string): Promise<number> => {
+        const target = userIdFromChannel(channel);
+        if (target === undefined) {
+          return 0;
+        }
+        const parsed = parseUserTopicEnvelope(envelope);
+        if (parsed.kind === 'invalid') {
+          return 0;
+        }
+        wsService.sendToLocalUser(
+          target,
+          parsed.payload,
+          parsed.excludeClientId,
+        );
+        return 1;
+      },
+    );
+    const sender = await connectClient(authQuery('user-1', 'client-1'));
+    const peer = await connectClient(authQuery('user-1', 'client-2'));
+    await waitForSessionCount(2);
+    const peerMessage = nextMessage(peer);
+    let senderReceived = false;
+    sender.once('message', () => {
+      senderReceived = true;
+    });
+
+    sender.send(
+      JSON.stringify({
+        op: SEND_MESSAGE_OP,
+        target: 'user-1',
+        message: 'PING',
+      }),
+    );
+
+    await expect(peerMessage).resolves.toBe(JSON.stringify('PING'));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(senderReceived).toBe(false);
+    expect(wsService.getSessionCount()).toBe(2);
+  });
+
+  it('NACKs a sendMessage frame with an invalid target', async () => {
+    const sender = await connectClient(authQuery('user-1', 'client-1'));
+    await waitForSessionCount(1);
+    const senderMessage = nextMessage(sender);
+
+    sender.send(
+      JSON.stringify({
+        op: SEND_MESSAGE_OP,
+        target: '   ',
+        message: 'PING',
+      }),
+    );
+
+    await expect(senderMessage).resolves.toBe(
+      JSON.stringify({ op: SEND_MESSAGE_ERROR_OP, reason: 'invalid target' }),
+    );
+    expect(wsService.getSessionCount()).toBe(1);
   });
 
   it('closes oversize frames with 1009, removes the session, keeps peers', async () => {

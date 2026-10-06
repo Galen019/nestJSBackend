@@ -12,6 +12,11 @@
  * - close: the registration close listener removes the session and fans out disconnect by token
  * - duplicate: new socket closed with 1008, existing session kept
  * - message: inbound payload is logged at debug with userId/clientId attribution
+ * - sendMessage: valid frames route verbatim via `sendToUser` excluding
+ *   origin; noise is ignored silently while invalid targets and delivery
+ *   failures warn plus NACK, socket always stays open
+ * - frame shape: `parseInboundFrame` owns the protocol contract, covered in
+ *   `session.interface.spec.ts` without sockets
  */
 import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
@@ -33,10 +38,13 @@ import { REDIS_CLIENT } from '../redis/redis.constants';
 import {
   parseClientId,
   parseUserId,
+  SEND_MESSAGE_ERROR_OP,
+  SEND_MESSAGE_OP,
   SESSION_TRACKERS,
   type SessionLifecycleEvent,
   type SessionTracker,
 } from './session.interface';
+import type { SocketFake } from '../../test/ws-test.helper';
 import { WS_CLOSE_POLICY_VIOLATION, WsService } from './ws.service';
 
 /**
@@ -107,6 +115,21 @@ describe('WsService', () => {
     module = undefined;
     vi.restoreAllMocks();
   });
+
+  /**
+   * Connects one sender through the production registration path.
+   *
+   * @return The fake socket wired to `handleMessage`.
+   */
+  function connectSender(): SocketFake {
+    const fake = createSocketFake();
+    service.handleConnection({
+      socket: fake.socket,
+      userId: parseUserId('user-1'),
+      clientId: parseClientId('client-1'),
+    });
+    return fake;
+  }
 
   it('adds a session when a client connects', () => {
     const { socket } = createSocketFake();
@@ -811,5 +834,105 @@ describe('WsService', () => {
     expect(
       service.sendToLocalUser(requireUserId('ghost'), { type: 'PING' }),
     ).toBe(0);
+  });
+
+  it('routes a sendMessage frame via sendToUser excluding the origin', async () => {
+    const fake = connectSender();
+
+    fireMessage(
+      fake,
+      JSON.stringify({
+        op: SEND_MESSAGE_OP,
+        target: 'user-2',
+        message: { text: 'hi' },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(publisher.publish).toHaveBeenCalledTimes(1);
+    });
+    expect(publisher.publish).toHaveBeenCalledWith(
+      'user:user-2',
+      JSON.stringify({
+        payload: { text: 'hi' },
+        excludeClientId: 'client-1',
+      }),
+    );
+    expect(fake.mocks.send).not.toHaveBeenCalled();
+    expect(fake.mocks.close).not.toHaveBeenCalled();
+  });
+
+  it('ignores noise without publishing, NACKing, or closing', () => {
+    const fake = connectSender();
+
+    fireMessage(fake, 'hello-payload');
+    fireMessage(fake, JSON.stringify({ op: 'other', target: 'user-2' }));
+
+    expect(publisher.publish).not.toHaveBeenCalled();
+    expect(fake.mocks.send).not.toHaveBeenCalled();
+    expect(fake.mocks.close).not.toHaveBeenCalled();
+    expect(service.getSessionCount()).toBe(1);
+  });
+
+  it('NACKs an invalid target without publishing', () => {
+    const fake = connectSender();
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    fireMessage(
+      fake,
+      JSON.stringify({
+        op: SEND_MESSAGE_OP,
+        target: '   ',
+        message: 'PING',
+      }),
+    );
+
+    expect(publisher.publish).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('invalid target'),
+    );
+    expect(fake.mocks.send).toHaveBeenCalledWith(
+      JSON.stringify({ op: SEND_MESSAGE_ERROR_OP, reason: 'invalid target' }),
+    );
+    expect(fake.mocks.close).not.toHaveBeenCalled();
+    expect(service.getSessionCount()).toBe(1);
+  });
+
+  it('NACKs and keeps the socket when delivery rejects', async () => {
+    const fake = connectSender();
+    publisher.publish.mockRejectedValueOnce(new Error('READONLY'));
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    fireMessage(
+      fake,
+      JSON.stringify({
+        op: SEND_MESSAGE_OP,
+        target: 'user-2',
+        message: 'PING',
+      }),
+    );
+
+    await vi.waitFor(
+      () => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Failed to deliver message'),
+        );
+      },
+      { timeout: 3000 },
+    );
+    await vi.waitFor(() => {
+      expect(fake.mocks.send).toHaveBeenCalledWith(
+        JSON.stringify({
+          op: SEND_MESSAGE_ERROR_OP,
+          reason: 'delivery failed',
+        }),
+      );
+    });
+    expect(fake.mocks.close).not.toHaveBeenCalled();
+    expect(service.getSessionCount()).toBe(1);
   });
 });
