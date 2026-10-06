@@ -20,10 +20,8 @@ import { WebSocket } from 'ws';
 import { AppModule } from './../src/app.module';
 import { DynamoService } from './../src/dynamo/dynamo.service';
 import { RedisService } from './../src/redis/redis.service';
-import {
-  channelFor,
-  USER_TOPIC_SUBSCRIBER,
-} from './../src/user-topics/user-topic.service';
+import { channelFor } from './../src/user-topics/user-topic.message';
+import { USER_TOPIC_SUBSCRIBER } from './../src/user-topics/user-topic.service';
 import { WsServerAdapter } from './../src/ws/ws.adapter';
 import { DEFAULT_WS_MAX_PAYLOAD_BYTES } from './../src/ws/ws.constants';
 import { WsService } from './../src/ws/ws.service';

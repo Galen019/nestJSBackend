@@ -1,10 +1,5 @@
 /**
- * WebSocket gateway for the `/ws` endpoint.
- *
- * - Thin adapter: resolves the upgrade identity to one authorize/reject
- *   decision, closes once on reject, delegates to `WsService` on authorize
- * - `WsService` owns duplicate policy and registration; this gateway never
- *   duplicates its closes.
+ * `/ws` gateway that authorizes connections and delegates session handling.
  */
 
 import { OnGatewayConnection, WebSocketGateway } from '@nestjs/websockets';

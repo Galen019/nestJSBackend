@@ -1,22 +1,21 @@
 /**
- * In-memory WebSocket session registry with tracker fan-out.
+ * In-memory WebSocket session registry and local delivery service.
  *
- * - Owns the `sessions` map keyed by branded `ClientId`, the single source
- *   of truth for local connections, plus a `userClients` membership index
- *   for O(1) per-user totals; both update together on register/close
- * - Handles duplicate policy, lifecycle cleanup, and single-client sends
- * - Fans registered connects and socket closes out to `SESSION_TRACKERS`
- *   (presence, per-user topics) via one `fanOut` path that isolates every
- *   tracker with `Promise.allSettled`, so tracker N+1 cannot stall or break
- *   registration, teardown, or sibling trackers
- * - Each session mints a `presenceToken` fanned out as the event token, so a
- *   slow disconnect landing after a fast reconnect on the same `clientId`
- *   cannot remove the fresh presence row.
+ * - Tracks local sessions and per-user client membership
+ * - Handles connection lifecycle, sends, and cross-replica broadcasts
+ * - Notifies session trackers while isolating tracker failures
+ * - Uses presence tokens to prevent stale disconnects removing fresh sessions
  */
 
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
+import { REDIS_CLIENT } from '../redis/redis.constants';
+import type { PublisherClient } from '../user-topics/publisher-client';
+import {
+  buildUserTopicEnvelope,
+  channelFor,
+} from '../user-topics/user-topic.message';
 import {
   SESSION_TRACKERS,
   type ClientId,
@@ -67,10 +66,13 @@ export class WsService {
    * Creates the registry with its lifecycle observers.
    *
    * @param trackers Best-effort observers notified on connect/disconnect.
+   * @param publisher Command-capable Redis connection for user broadcasts.
    */
   constructor(
     @Inject(SESSION_TRACKERS)
     private readonly trackers: SessionTracker[],
+    @Inject(REDIS_CLIENT)
+    private readonly publisher: PublisherClient,
   ) {}
 
   /**
@@ -97,6 +99,10 @@ export class WsService {
       return { kind: 'rejected' };
     }
     if (this.sessions.has(clientId)) {
+      // TODO: enforce global clientId uniqueness across replicas with a
+      // DynamoDB conditional claim on the Clients table. Today two replicas
+      // can each hold the same clientId, and a user broadcast then reaches
+      // both holders (only the excluded origin client is skipped).
       this.logger.warn('Rejecting duplicate connection', clientId);
       socket.close(WS_CLOSE_POLICY_VIOLATION, 'duplicate clientId');
       return { kind: 'duplicate' };
@@ -294,6 +300,86 @@ export class WsService {
       this.logger.warn('Failed to send message', clientId);
       return false;
     }
+  }
+
+  /**
+   * Broadcasts a message to every session of a user on every replica.
+   *
+   * - publishes one `{ payload, excludeClientId? }` envelope to
+   *   `user:{userId}`; each replica's `UserTopicService` delivers it to its
+   *   own local sessions via `sendToLocalUser`
+   * - `excludeClientId` skips the origin client so a broadcast never echoes
+   *   back to its sender; server-initiated sends omit it and reach everyone
+   * - at-most-once transport: publishing to zero subscribers resolves
+   *   without delivery, matching Redis pub/sub semantics
+   * - publish failures log at warn and reject to the caller instead of
+   *   resolving quietly, so no failure looks like a delivery.
+   *
+   * @param userId Owner of the recipient sessions.
+   * @param message Payload to serialize into the envelope and broadcast.
+   * @param excludeClientId Origin client to skip on delivery, if any.
+   * @return Resolves when the publish settles.
+   */
+  async sendToUser(
+    userId: UserId,
+    message: unknown,
+    excludeClientId?: ClientId,
+  ): Promise<void> {
+    const channel = channelFor(userId);
+    let envelope: string;
+    try {
+      envelope = buildUserTopicEnvelope(message, excludeClientId);
+    } catch {
+      this.logger.warn('Dropping unserializable broadcast', channel);
+      throw new Error(`Broadcast payload for ${channel} is not serializable`);
+    }
+    try {
+      const receivers = await this.publisher.publish(channel, envelope);
+      this.logger.debug(
+        `Broadcast to ${channel}: ${Buffer.byteLength(envelope, 'utf8')} bytes, ${receivers} subscribers`,
+      );
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : 'unknown error';
+      this.logger.warn(`Failed to broadcast to ${channel}: ${detail}`);
+      throw err instanceof Error ? err : new Error(detail);
+    }
+  }
+
+  /**
+   * Delivers a message to every local session of a user.
+   *
+   * - single local-delivery loop behind the distributed fan-out: the only
+   *   caller outside this service is the topic subscriber's delivery hook
+   * - reads the `userClients` membership index, so users without local
+   *   sessions resolve to 0 without work
+   * - skips `excludeClientId` so broadcasts never echo to their sender
+   * - per-client misses (closed sockets, unserializable payloads) are
+   *   skipped via `sendToClient` false semantics and never throw.
+   *
+   * @param userId Owner of the recipient sessions.
+   * @param message Payload to serialize to JSON and send.
+   * @param excludeClientId Origin client to skip on delivery, if any.
+   * @return Count of local sessions the message was sent to.
+   */
+  sendToLocalUser(
+    userId: UserId,
+    message: unknown,
+    excludeClientId?: ClientId,
+  ): number {
+    const members = this.userClients.get(userId);
+    if (members === undefined) {
+      return 0;
+    }
+    let delivered = 0;
+    for (const clientId of members) {
+      if (excludeClientId !== undefined && clientId === excludeClientId) {
+        continue;
+      }
+      if (this.sendToClient(clientId, message)) {
+        delivered += 1;
+      }
+    }
+    return delivered;
   }
 
   /**

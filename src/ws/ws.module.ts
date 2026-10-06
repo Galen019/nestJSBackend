@@ -1,14 +1,14 @@
 /**
- * WebSocket feature module.
+ * Registers the WebSocket gateway and session registry.
  *
- * - Registers the `/ws` gateway plus its session registry
- * - Fans registry lifecycle out to presence and per-user topics via trackers
+ * - Connects lifecycle trackers and distributed broadcasts to local delivery
  */
 
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { PresenceModule } from '../presence/presence.module';
 import { PresenceService } from '../presence/presence.service';
+import { RedisModule } from '../redis/redis.module';
 import { UserTopicsModule } from '../user-topics/user-topics.module';
 import { UserTopicService } from '../user-topics/user-topic.service';
 import { SESSION_TRACKERS, type SessionTracker } from './session.interface';
@@ -16,15 +16,13 @@ import { WsGateway } from './ws.gateway';
 import { WsService } from './ws.service';
 
 /**
- * Feature module wiring the WebSocket gateway to its registry.
+ * Wires the WebSocket gateway, registry, and session trackers.
  *
- * - Provides `WsGateway` for the `/ws` endpoint lifecycle
- * - Provides and exports `WsService` for session lookup and sends
- * - Provides the ordered `SESSION_TRACKERS` fan-out list; tracker N+1 is a
- *   new entry here, with no edits to `WsService`.
+ * - Exports `WsService` for session lookup and sends
+ * - Uses `RedisModule` for broadcasts and registers session trackers
  */
 @Module({
-  imports: [AuthModule, PresenceModule, UserTopicsModule],
+  imports: [AuthModule, PresenceModule, RedisModule, UserTopicsModule],
   providers: [
     {
       provide: SESSION_TRACKERS,
@@ -39,4 +37,19 @@ import { WsService } from './ws.service';
   ],
   exports: [WsService],
 })
-export class WsModule {}
+export class WsModule {
+  /**
+   * Registers local topic delivery before connections or subscriptions start.
+   *
+   * @param wsService Registry owning the local-delivery loop.
+   * @param topics Topic service receiving the delivery hook.
+   */
+  constructor(
+    private readonly wsService: WsService,
+    private readonly topics: UserTopicService,
+  ) {
+    this.topics.setLocalDeliverer((userId, payload, excludeClientId) =>
+      this.wsService.sendToLocalUser(userId, payload, excludeClientId),
+    );
+  }
+}

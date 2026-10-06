@@ -1,18 +1,9 @@
 /**
- * Per-user Redis SUBSCRIBE lifecycle for distributed WS fan-out.
+ * Manages per-user Redis subscriptions for distributed WebSocket delivery.
  *
- * - implements `SessionTracker`: subscribes `user:{userId}` while the user
- *   holds local sessions, unsubscribes when the last one disconnects
- * - owns one dedicated subscriber connection plus the set of claimed channels
- * - keeps no connection counts: `WsService` owns the per-user totals and
- *   reports them per event, this service only tracks what it subscribed
- * - one `withTopicOp` path runs every (un)subscribe with the same bounded
- *   retry budget; `WsService` additionally isolates tracker failures, so an
- *   unexpected throw still cannot stall siblings
- * - a failed subscribe releases its claim so the next connect retries; a
- *   failed unsubscribe heals on the next subscribe
- * - channels are ephemeral, no stale state survives a restart, no cleanup job needed
- * - debug-only message listener, no routing or delivery in this step.
+ * - Subscribes while a user has local sessions; unsubscribes after the last
+ * - Retries failed operations on later lifecycle events
+ * - Delivers valid messages to local sessions through the `WsModule` hook
  */
 
 import {
@@ -25,21 +16,23 @@ import {
 import { withBoundedRetry } from '../common/retry';
 import { quitRedisClient } from '../redis/redis.lifecycle';
 import type {
+  ClientId,
   SessionLifecycleEvent,
   SessionTracker,
   UserId,
 } from '../ws/session.interface';
 import type { SubscriberClient } from './subscriber-client';
+import {
+  channelFor,
+  parseUserTopicEnvelope,
+  userIdFromChannel,
+} from './user-topic.message';
 
 /** DI token for the dedicated pub/sub subscriber connection. */
 export const USER_TOPIC_SUBSCRIBER = 'USER_TOPIC_SUBSCRIBER';
 
 /**
- * Retry budget shared by every topic (un)subscribe.
- *
- * - deliberately smaller and faster than the boot-time connect budget: a
- *   topic op that exhausts it heals on the next lifecycle event, while a
- *   boot connect has no later trigger and must keep retrying.
+ * Bounded retry budget for topic subscribe and unsubscribe operations.
  */
 const TOPIC_RETRY = {
   attempts: 5,
@@ -48,23 +41,21 @@ const TOPIC_RETRY = {
 } as const;
 
 /**
- * Builds the channel name for one user.
+ * Delivers a broadcast to a user's local sessions without a DI cycle.
  *
- * @param userId Owner of the connections.
- * @return The Redis pub/sub channel for the user.
+ * @param userId Owner of the recipient sessions.
+ * @param payload Broadcast payload to deliver.
+ * @param excludeClientId Origin client to skip on delivery, if any.
+ * @return Count of local sessions the message was sent to.
  */
-export function channelFor(userId: UserId): string {
-  return `user:${userId}`;
-}
+export type LocalUserDeliverer = (
+  userId: UserId,
+  payload: unknown,
+  excludeClientId?: ClientId,
+) => number;
 
 /**
- * Tracks per-user subscriptions as a `SessionTracker`.
- *
- * - connect claims the channel and subscribes unless already claimed, so a
- *   later connect retries a subscribe that previously exhausted its budget
- * - disconnect unsubscribes only when no local sessions remain for the user
- * - the claim set holds channels with a live or in-flight subscription, never
- *   connection counts, so it cannot drift from the registry.
+ * Tracks user-topic subscriptions in response to session lifecycle events.
  */
 @Injectable()
 export class UserTopicService
@@ -72,6 +63,7 @@ export class UserTopicService
 {
   private readonly logger = new Logger(UserTopicService.name);
   private readonly subscribed = new Set<string>();
+  private localDeliverer: LocalUserDeliverer | undefined;
 
   /**
    * Creates the service with its dedicated subscriber connection.
@@ -155,14 +147,7 @@ export class UserTopicService
   }
 
   /**
-   * Runs one topic (un)subscribe with the shared bounded retry budget.
-   *
-   * - single owner of topic retry policy, one path for both operations
-   * - releases a subscribe claim when the budget is exhausted so the next
-   *   connect retries instead of leaving the channel silently unsubscribed;
-   *   an unsubscribe claim is already released, so a failed unsubscribe
-   *   heals on the next subscribe, which re-subscribes idempotently
-   * - logs and swallows failures so fan-out callers resolve.
+   * Retries a topic operation, logs failures, and leaves it recoverable.
    *
    * @param channel Channel to (un)subscribe.
    * @param op Which operation is running, for messages and claim handling.
@@ -193,17 +178,49 @@ export class UserTopicService
   }
 
   /**
-   * Observes one pub/sub message for a subscribed user channel.
+   * Registers the local-delivery hook for inbound topic messages.
    *
-   * - debug-only hook, logs channel plus byte length without bodies
-   * - delivery and routing plug in later without changing lifecycle.
+   * - single wiring point owned by `WsModule`: the registry passes its
+   *   `sendToLocalUser`, so this service delivers without depending on the
+   *   registry and without forming a DI cycle.
+   *
+   * @param deliverer Function delivering to the local sessions of a user.
+   */
+  setLocalDeliverer(deliverer: LocalUserDeliverer): void {
+    this.localDeliverer = deliverer;
+  }
+
+  /**
+   * Validates and delivers a topic message to local sessions
    *
    * @param message Raw channel payload.
    * @param channel Channel the message arrived on.
    */
   private handleTopicMessage(message: string, channel: string): void {
+    const userId = userIdFromChannel(channel);
+    if (userId === undefined) {
+      this.logger.warn(`Dropping topic message on foreign channel ${channel}`);
+      return;
+    }
+    const parsed = parseUserTopicEnvelope(message);
+    if (parsed.kind === 'invalid') {
+      this.logger.warn(
+        `Dropping topic message on ${channel}: ${parsed.reason}`,
+      );
+      return;
+    }
+    if (this.localDeliverer === undefined) {
+      throw new Error(
+        `Dropping topic message on ${channel}: local deliverer not registered (WsModule wiring missing)`,
+      );
+    }
+    const delivered = this.localDeliverer(
+      userId,
+      parsed.payload,
+      parsed.excludeClientId,
+    );
     this.logger.debug(
-      `Topic message on ${channel}: ${Buffer.byteLength(message, 'utf8')} bytes`,
+      `Topic message on ${channel}: ${Buffer.byteLength(message, 'utf8')} bytes to ${delivered} local sessions`,
     );
   }
 }
