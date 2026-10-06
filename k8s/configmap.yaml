@@ -1,0 +1,26 @@
+# Explicit lab config (mirrors docker-compose.yml app.environment).
+# No Compose ${...:-default} interpolation here — Kubernetes does not expand
+# that syntax, so every value is a literal. Dummy AWS keys stay here
+# (compose parity; real keys would move to a Secret for prod).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+data:
+  NODE_ENV: production
+  PORT: '3000'
+  REDIS_HOST: redis
+  REDIS_PORT: '6379'
+  DYNAMODB_ENDPOINT: http://dynamodb:8000
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: local
+  AWS_SECRET_ACCESS_KEY: local
+  JWT_ISSUER: test-issuer
+  JWT_AUDIENCE: test-audience
+  OTEL_ENABLED: 'true'
+  OTEL_SERVICE_NAME: nestJS-server
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+  OTEL_TRACES_SAMPLER: parentbased_always_on

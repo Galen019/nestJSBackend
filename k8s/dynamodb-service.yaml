@@ -1,0 +1,17 @@
+# Gives DynamoDB its `dynamodb:8000` DNS name (matches DYNAMODB_ENDPOINT).
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamodb
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  type: ClusterIP
+  selector:
+    app: dynamodb
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8000
+      targetPort: 8000

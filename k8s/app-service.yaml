@@ -1,0 +1,17 @@
+# Stable in-cluster address for the app.
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  type: ClusterIP
+  selector:
+    app: app
+  ports:
+    - name: http
+      protocol: TCP
+      port: 3000
+      targetPort: 3000

@@ -1,0 +1,17 @@
+# Gives Redis its `redis:6379` DNS name (mirrors compose hostname `redis`).
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  type: ClusterIP
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      protocol: TCP
+      port: 6379
+      targetPort: 6379

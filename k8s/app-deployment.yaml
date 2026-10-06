@@ -1,0 +1,66 @@
+# Runs the NestJS app (mirrors compose `app` service build: .).
+# Build/load for kind:
+#   docker build -t productionbackend:local .
+#   kind load docker-image productionbackend:local   # skip on Docker Desktop
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: productionbackend:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - configMapRef:
+                name: app-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: REDIS_PASSWORD
+            - name: JWT_PUBLIC_KEY_PATH
+              value: /run/secrets/jwt-public.pem
+          volumeMounts:
+            - name: jwt-key
+              mountPath: /run/secrets/jwt-public.pem
+              subPath: jwt-public.pem
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: jwt-key
+          secret:
+            secretName: app-secrets
+            items:
+              - key: jwt-public.pem
+                path: jwt-public.pem
+            defaultMode: 0400

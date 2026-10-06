@@ -1,0 +1,21 @@
+# Gives Jaeger its `jaeger:4317` DNS name + lab UI on 16686.
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  type: ClusterIP
+  selector:
+    app: jaeger
+  ports:
+    - name: otlp-grpc
+      protocol: TCP
+      port: 4317
+      targetPort: 4317
+    - name: ui
+      protocol: TCP
+      port: 16686
+      targetPort: 16686

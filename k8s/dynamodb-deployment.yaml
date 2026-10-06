@@ -1,0 +1,25 @@
+# Runs DynamoDB Local (mirrors compose `dynamodb: amazon/dynamodb-local:3.3.1`).
+# Ephemeral, no PVC (compose parity). No env/args/probes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynamodb
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dynamodb
+  template:
+    metadata:
+      labels:
+        app: dynamodb
+    spec:
+      containers:
+        - name: dynamodb
+          image: amazon/dynamodb-local:3.3.1
+          ports:
+            - name: http
+              containerPort: 8000
