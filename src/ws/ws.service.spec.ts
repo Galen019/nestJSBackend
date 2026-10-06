@@ -3,6 +3,7 @@
  *
  * - connect: session added with userId/clientId/socket/presenceToken
  * - trackers: registered fans out connect with the token and user total, never on duplicate/rejected
+ * - isolation: a rejecting or throwing tracker never blocks siblings, failures log at warn
  * - lookup: getSession returns the entry, getSessionCount tracks active sessions
  * - send: routes JSON through the right socket, false for unknown/closed clients
  * - close: the registration close listener removes the session and fans out disconnect by token
@@ -20,6 +21,7 @@ import {
   SESSION_TRACKERS,
   type SessionLifecycleEvent,
   type SessionSocket,
+  type SessionTracker,
 } from './session.interface';
 import { WS_CLOSE_POLICY_VIOLATION, WsService } from './ws.service';
 
@@ -135,10 +137,10 @@ describe('WsService', () => {
   let module: TestingModule | undefined;
   let tracker: {
     handleConnect: ReturnType<
-      typeof vi.fn<(event: SessionLifecycleEvent) => void>
+      typeof vi.fn<(event: SessionLifecycleEvent) => Promise<void>>
     >;
     handleDisconnect: ReturnType<
-      typeof vi.fn<(event: SessionLifecycleEvent) => void>
+      typeof vi.fn<(event: SessionLifecycleEvent) => Promise<void>>
     >;
   };
 
@@ -146,17 +148,26 @@ describe('WsService', () => {
    * Builds a testing module with a fresh WsService.
    *
    * - provides a mocked tracker list so no presence or Redis calls happen
+   * - extra trackers run before the observed one to prove failure isolation
    * - tracks the module so it can be closed after each test.
+   *
+   * @param extraTrackers Additional trackers placed before the observed one.
    */
-  async function compile(): Promise<WsService> {
+  async function compile(
+    extraTrackers: SessionTracker[] = [],
+  ): Promise<WsService> {
     tracker = {
-      handleConnect: vi.fn<(event: SessionLifecycleEvent) => void>(),
-      handleDisconnect: vi.fn<(event: SessionLifecycleEvent) => void>(),
+      handleConnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
+      handleDisconnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
     };
     module = await Test.createTestingModule({
       providers: [
         WsService,
-        { provide: SESSION_TRACKERS, useValue: [tracker] },
+        { provide: SESSION_TRACKERS, useValue: [...extraTrackers, tracker] },
       ],
     }).compile();
     return module.get<WsService>(WsService);
@@ -666,5 +677,88 @@ describe('WsService', () => {
 
     expect(tracker.handleConnect).not.toHaveBeenCalled();
     expect(tracker.handleDisconnect).not.toHaveBeenCalled();
+  });
+
+  it('isolates a rejecting tracker so siblings still observe the connect', async () => {
+    await module?.close();
+    const failing = {
+      handleConnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockRejectedValue(new Error('tracker down')),
+      handleDisconnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
+    };
+    service = await compile([failing]);
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const { socket } = createSocketFake();
+
+    service.handleConnection({
+      socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+
+    expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
+    expect(tracker.handleConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123', userSessionCount: 1 }),
+    );
+    await vi.waitFor(
+      () => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Session tracker 0 connect failed'),
+        );
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it('isolates a synchronously throwing tracker into a logged rejection', async () => {
+    await module?.close();
+    const throwing = {
+      handleConnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockImplementation(() => {
+          throw new Error('sync boom');
+        }),
+      handleDisconnect: vi
+        .fn<(event: SessionLifecycleEvent) => Promise<void>>()
+        .mockResolvedValue(undefined),
+    };
+    service = await compile([throwing]);
+    const warnSpy = vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const { socket } = createSocketFake();
+
+    service.handleConnection({
+      socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+    });
+
+    expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
+    await vi.waitFor(
+      () => {
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Session tracker 0 connect failed'),
+        );
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it('skips serialization when no session exists', () => {
+    const stringifySpy = vi.spyOn(JSON, 'stringify');
+    try {
+      expect(
+        service.sendToClient(requireClientId('ghost'), { type: 'MESSAGE' }),
+      ).toBe(false);
+      expect(stringifySpy).not.toHaveBeenCalled();
+    } finally {
+      stringifySpy.mockRestore();
+    }
   });
 });

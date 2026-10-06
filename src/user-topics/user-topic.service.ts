@@ -6,8 +6,9 @@
  * - owns one dedicated subscriber connection plus the set of claimed channels
  * - keeps no connection counts: `WsService` owns the per-user totals and
  *   reports them per event, this service only tracks what it subscribed
- * - best-effort only: (un)subscribe runs in the background with bounded
- *   retries and never throws to the caller, sockets never block
+ * - one `withTopicOp` path runs every (un)subscribe with the same bounded
+ *   retry budget; `WsService` additionally isolates tracker failures, so an
+ *   unexpected throw still cannot stall siblings
  * - a failed subscribe releases its claim so the next connect retries; a
  *   failed unsubscribe heals on the next subscribe
  * - channels are ephemeral, no stale state survives a restart, no cleanup job needed
@@ -22,11 +23,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { withBoundedRetry } from '../common/retry';
-import {
-  attachRedisErrorHandler,
-  connectRedisClient,
-  quitRedisClient,
-} from '../redis/redis.lifecycle';
+import { quitRedisClient } from '../redis/redis.lifecycle';
 import type {
   SessionLifecycleEvent,
   SessionTracker,
@@ -37,14 +34,18 @@ import type { SubscriberClient } from './subscriber-client';
 /** DI token for the dedicated pub/sub subscriber connection. */
 export const USER_TOPIC_SUBSCRIBER = 'USER_TOPIC_SUBSCRIBER';
 
-/** Subscribe/unsubscribe retry budget: 5 attempts, then heal on next connect. */
-const TOPIC_ATTEMPTS = 5;
-
-/** Delay before the second (un)subscribe attempt, doubled per retry. */
-const TOPIC_INITIAL_DELAY_MS = 50;
-
-/** Upper bound for the (un)subscribe backoff delay. */
-const TOPIC_MAX_DELAY_MS = 500;
+/**
+ * Retry budget shared by every topic (un)subscribe.
+ *
+ * - deliberately smaller and faster than the boot-time connect budget: a
+ *   topic op that exhausts it heals on the next lifecycle event, while a
+ *   boot connect has no later trigger and must keep retrying.
+ */
+const TOPIC_RETRY = {
+  attempts: 5,
+  initialDelayMs: 50,
+  maxDelayMs: 500,
+} as const;
 
 /**
  * Builds the channel name for one user.
@@ -81,7 +82,7 @@ export class UserTopicService
     @Inject(USER_TOPIC_SUBSCRIBER)
     private readonly subscriber: SubscriberClient,
   ) {
-    attachRedisErrorHandler(this.subscriber, (err: Error) => {
+    this.subscriber.on('error', (err: Error) => {
       this.logger.error(`User-topic subscriber error: ${err.message}`);
     });
   }
@@ -92,10 +93,10 @@ export class UserTopicService
    * @return Resolves when the subscriber is connected.
    */
   async onModuleInit(): Promise<void> {
-    await connectRedisClient(
-      this.subscriber,
-      'Failed to connect user-topic subscriber after 10 attempts',
-    );
+    await withBoundedRetry(() => this.subscriber.connect(), {
+      failureMessage:
+        'Failed to connect user-topic subscriber after 10 attempts',
+    });
   }
 
   /**
@@ -111,18 +112,23 @@ export class UserTopicService
    * Claims the user's channel, subscribing unless already claimed.
    *
    * - the claim lands synchronously so concurrent connects subscribe once
-   * - the SUBSCRIBE runs in the background; a connect arriving after an
+   * - the SUBSCRIBE settles via `withTopicOp`; a connect arriving after an
    *   exhausted subscribe finds no claim and retries it.
    *
    * @param event Session identity for the new connection.
+   * @return Resolves when the subscribe settles or the claim is released.
    */
-  handleConnect(event: SessionLifecycleEvent): void {
+  async handleConnect(event: SessionLifecycleEvent): Promise<void> {
     const channel = channelFor(event.userId);
     if (this.subscribed.has(channel)) {
       return;
     }
     this.subscribed.add(channel);
-    void this.subscribeWithRetry(channel);
+    await this.withTopicOp(channel, 'subscribe', () =>
+      this.subscriber.subscribe(channel, (message: string, ch: string): void =>
+        this.handleTopicMessage(message, ch),
+      ),
+    );
   }
 
   /**
@@ -132,8 +138,9 @@ export class UserTopicService
    * - unclaimed channels are a no-op so duplicated closes stay safe.
    *
    * @param event Session identity plus the remaining user total.
+   * @return Resolves when the unsubscribe settles.
    */
-  handleDisconnect(event: SessionLifecycleEvent): void {
+  async handleDisconnect(event: SessionLifecycleEvent): Promise<void> {
     if (event.userSessionCount > 0) {
       return;
     }
@@ -142,7 +149,47 @@ export class UserTopicService
       return;
     }
     this.subscribed.delete(channel);
-    void this.unsubscribeWithRetry(channel);
+    await this.withTopicOp(channel, 'unsubscribe', () =>
+      this.subscriber.unsubscribe(channel),
+    );
+  }
+
+  /**
+   * Runs one topic (un)subscribe with the shared bounded retry budget.
+   *
+   * - single owner of topic retry policy, one path for both operations
+   * - releases a subscribe claim when the budget is exhausted so the next
+   *   connect retries instead of leaving the channel silently unsubscribed;
+   *   an unsubscribe claim is already released, so a failed unsubscribe
+   *   heals on the next subscribe, which re-subscribes idempotently
+   * - logs and swallows failures so fan-out callers resolve.
+   *
+   * @param channel Channel to (un)subscribe.
+   * @param op Which operation is running, for messages and claim handling.
+   * @param task The subscribe/unsubscribe call to retry.
+   * @return Resolves when the op settles or its failure is absorbed.
+   */
+  private async withTopicOp(
+    channel: string,
+    op: 'subscribe' | 'unsubscribe',
+    task: () => Promise<unknown>,
+  ): Promise<void> {
+    try {
+      await withBoundedRetry(task, {
+        ...TOPIC_RETRY,
+        failureMessage: `Failed to ${op} ${channel} after ${TOPIC_RETRY.attempts} attempts`,
+      });
+    } catch (err: unknown) {
+      if (op === 'subscribe') {
+        this.subscribed.delete(channel);
+      }
+      const detail = err instanceof Error ? err.message : 'unknown error';
+      this.logger.warn(
+        op === 'subscribe'
+          ? `Failed to subscribe ${channel}: ${detail}; will retry on the next connect`
+          : `Failed to unsubscribe ${channel}: ${detail}; the next subscribe heals it`,
+      );
+    }
   }
 
   /**
@@ -158,72 +205,5 @@ export class UserTopicService
     this.logger.debug(
       `Topic message on ${channel}: ${Buffer.byteLength(message, 'utf8')} bytes`,
     );
-  }
-
-  /**
-   * Subscribes to one user channel with bounded retries.
-   *
-   * - releases the claim when the budget is exhausted so the next connect
-   *   retries instead of leaving the channel silently unsubscribed
-   * - never throws to the caller.
-   *
-   * @param channel Channel to subscribe to.
-   * @return Resolves when the subscribe settles or the claim is released.
-   */
-  private async subscribeWithRetry(channel: string): Promise<void> {
-    try {
-      await withBoundedRetry(
-        async (): Promise<void> => {
-          await this.subscriber.subscribe(
-            channel,
-            (message: string, ch: string): void =>
-              this.handleTopicMessage(message, ch),
-          );
-        },
-        {
-          attempts: TOPIC_ATTEMPTS,
-          initialDelayMs: TOPIC_INITIAL_DELAY_MS,
-          maxDelayMs: TOPIC_MAX_DELAY_MS,
-          failureMessage: `Failed to subscribe ${channel} after ${TOPIC_ATTEMPTS} attempts`,
-        },
-      );
-    } catch (err: unknown) {
-      this.subscribed.delete(channel);
-      const detail = err instanceof Error ? err.message : 'unknown error';
-      this.logger.warn(
-        `Failed to subscribe ${channel}: ${detail}; will retry on the next connect`,
-      );
-    }
-  }
-
-  /**
-   * Unsubscribes from one user channel with bounded retries.
-   *
-   * - the claim is already released, so a failed unsubscribe heals on the
-   *   next subscribe, which re-subscribes idempotently
-   * - never throws to the caller.
-   *
-   * @param channel Channel to unsubscribe from.
-   * @return Resolves when the unsubscribe settles.
-   */
-  private async unsubscribeWithRetry(channel: string): Promise<void> {
-    try {
-      await withBoundedRetry(
-        async (): Promise<void> => {
-          await this.subscriber.unsubscribe(channel);
-        },
-        {
-          attempts: TOPIC_ATTEMPTS,
-          initialDelayMs: TOPIC_INITIAL_DELAY_MS,
-          maxDelayMs: TOPIC_MAX_DELAY_MS,
-          failureMessage: `Failed to unsubscribe ${channel} after ${TOPIC_ATTEMPTS} attempts`,
-        },
-      );
-    } catch (err: unknown) {
-      const detail = err instanceof Error ? err.message : 'unknown error';
-      this.logger.warn(
-        `Failed to unsubscribe ${channel}: ${detail}; the next subscribe heals it`,
-      );
-    }
   }
 }

@@ -6,6 +6,8 @@
  * - `Session` shape stored in the registry keyed by `clientId`
  * - `SessionTracker` observers fanned out on connect/disconnect, so new
  *   side effects wire in via `SESSION_TRACKERS` without touching the registry
+ * - Gateway identity parsing plus the authorize/reject decision live here as
+ *   pure functions, so the gateway stays a thin close-and-delegate adapter.
  */
 
 /** User identity, validated once at the connection boundary. */
@@ -80,81 +82,184 @@ export interface SessionLifecycleEvent {
  *
  * - `WsService` owns the sessions and notifies every tracker on
  *   connect/disconnect, so tracker N+1 is a module-wiring line
- * - handlers must never throw and never block: failures are swallowed
- *   internally and async work runs fire-and-forget, so one slow tracker
- *   cannot stall registration or teardown.
+ * - handlers are async and may reject: `WsService` settles every tracker
+ *   with `Promise.allSettled` and logs failures, so one slow or throwing
+ *   tracker cannot stall registration, teardown, or sibling trackers.
  */
 export interface SessionTracker {
   /**
    * Observes a newly registered session.
    *
    * @param event Session identity plus the post-connect user total.
+   * @return Resolves when the tracker has observed the connect.
    */
-  handleConnect(event: SessionLifecycleEvent): void;
+  handleConnect(event: SessionLifecycleEvent): Promise<void>;
   /**
    * Observes a closed session.
    *
    * @param event Session identity plus the remaining user total.
+   * @return Resolves when the tracker has observed the disconnect.
    */
-  handleDisconnect(event: SessionLifecycleEvent): void;
+  handleDisconnect(event: SessionLifecycleEvent): Promise<void>;
 }
 
 /**
- * Parses a raw `userId` query value into the domain type.
+ * Parses a raw identity query value into a usable string.
  *
- * - boundary parser, rejects missing, non-string, empty, and blank values
- * - the brand cast is earned by the check above it.
- *
- * @param value Raw query value from the upgrade URL.
- * @return The branded id, or undefined when the value is unusable.
- */
-export function parseUserId(value: unknown): UserId | undefined {
-  if (!isNonBlankString(value)) {
-    return undefined;
-  }
-  return value as UserId;
-}
-
-/**
- * Parses a raw `clientId` query value into the domain type.
- *
- * - boundary parser, rejects missing, non-string, empty, and blank values
- * - the brand cast is earned by the check above it.
+ * - single owner of the non-blank check behind every id/token parser
+ * - rejects missing, non-string, empty, and whitespace-only values
+ * - returns the original string unchanged when it carries content.
  *
  * @param value Raw query value from the upgrade URL.
- * @return The branded id, or undefined when the value is unusable.
+ * @return The string, or undefined when the value is unusable.
  */
-export function parseClientId(value: unknown): ClientId | undefined {
-  if (!isNonBlankString(value)) {
-    return undefined;
-  }
-  return value as ClientId;
-}
-
-/**
- * Parses the raw `token` query value.
- *
- * - boundary parser, rejects missing, non-string, empty, and blank values
- * - the token itself is verified later, this only checks presence.
- *
- * @param value Raw query value from the upgrade URL.
- * @return The token string, or undefined when unusable.
- */
-export function parseToken(value: unknown): string | undefined {
-  if (!isNonBlankString(value)) {
+export function parseNonBlank(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
     return undefined;
   }
   return value;
 }
 
 /**
- * Checks that a value is a non-blank string.
+ * Parses a raw `userId` query value into the domain type.
  *
- * - shared narrowing behind the id parsers, rejects whitespace-only strings.
+ * - boundary parser delegating to `parseNonBlank`, brand cast earned by it.
  *
- * @param value Candidate identity value.
- * @return True when the value is a usable non-blank string.
+ * @param value Raw query value from the upgrade URL.
+ * @return The branded id, or undefined when the value is unusable.
  */
-function isNonBlankString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
+export function parseUserId(value: unknown): UserId | undefined {
+  const parsed = parseNonBlank(value);
+  return parsed === undefined ? undefined : (parsed as UserId);
+}
+
+/**
+ * Parses a raw `clientId` query value into the domain type.
+ *
+ * - boundary parser delegating to `parseNonBlank`, brand cast earned by it.
+ *
+ * @param value Raw query value from the upgrade URL.
+ * @return The branded id, or undefined when the value is unusable.
+ */
+export function parseClientId(value: unknown): ClientId | undefined {
+  const parsed = parseNonBlank(value);
+  return parsed === undefined ? undefined : (parsed as ClientId);
+}
+
+/**
+ * Parses the raw `token` query value.
+ *
+ * - boundary parser delegating to `parseNonBlank`, presence check only
+ * - the token itself is verified later, this only checks presence.
+ *
+ * @param value Raw query value from the upgrade URL.
+ * @return The token string, or undefined when unusable.
+ */
+export function parseToken(value: unknown): string | undefined {
+  return parseNonBlank(value);
+}
+
+/**
+ * Identity parsed from the WS upgrade URL.
+ *
+ * - token stays raw; verification happens in `resolveGatewayIdentity`
+ * - kept separate from `ConnectionParams` so raw tokens never reach the registry.
+ */
+export interface GatewayIdentity {
+  userId: UserId | undefined;
+  clientId: ClientId | undefined;
+  token: string | undefined;
+}
+
+/**
+ * Outcome of resolving one upgrade request to an authorize/reject decision.
+ *
+ * - discriminated union so the gateway has a single close site: `rejected`
+ *   closes with 1008, `authorized` delegates to the registry.
+ */
+export type ResolveIdentityResult =
+  | { kind: 'authorized'; userId: UserId; clientId: ClientId }
+  | { kind: 'rejected'; reason: string };
+
+/**
+ * Extracts `userId`/`clientId`/`token` from the upgrade request.
+ *
+ * - boundary parse: raw query values become branded ids or undefined
+ * - token stays a raw string; verification happens in `resolveGatewayIdentity`
+ * - returns undefined values when no URL is present, caller then rejects.
+ *
+ * @param args Raw connection args from the ws adapter.
+ * @return The parsed identity values plus the raw token.
+ */
+export function extractGatewayIdentity(args: unknown[]): GatewayIdentity {
+  const request = args[0];
+  if (!hasUpgradeUrl(request) || request.url === undefined) {
+    return { userId: undefined, clientId: undefined, token: undefined };
+  }
+  try {
+    const params = new URL(request.url, 'http://localhost').searchParams;
+    return {
+      userId: parseUserId(params.get('userId')),
+      clientId: parseClientId(params.get('clientId')),
+      token: parseToken(params.get('token')),
+    };
+  } catch {
+    return { userId: undefined, clientId: undefined, token: undefined };
+  }
+}
+
+/**
+ * Resolves one parsed identity to an authorize/reject decision.
+ *
+ * - rejects when the token is missing or fails verification
+ * - rejects when the token carries no `sub`: anonymous tokens cannot claim
+ *   any `userId`, the binding is fail-closed
+ * - rejects when `sub` differs from `userId` or when ids are missing
+ * - pure function of identity plus verifier, unit-testable without sockets.
+ *
+ * @param identity Parsed upgrade identity with the raw token.
+ * @param verify Token verifier returning the payload, throwing when invalid.
+ * @return The authorize/reject decision for the gateway to act on.
+ */
+export function resolveGatewayIdentity(
+  identity: GatewayIdentity,
+  verify: (token: string) => { sub?: string },
+): ResolveIdentityResult {
+  const { userId, clientId, token } = identity;
+  if (token === undefined) {
+    return { kind: 'rejected', reason: 'missing token' };
+  }
+  let sub: string | undefined;
+  try {
+    sub = verify(token).sub;
+  } catch {
+    return { kind: 'rejected', reason: 'invalid token' };
+  }
+  if (sub === undefined) {
+    return { kind: 'rejected', reason: 'missing token subject' };
+  }
+  if (userId === undefined || clientId === undefined) {
+    return { kind: 'rejected', reason: 'missing userId/clientId' };
+  }
+  if (sub !== userId) {
+    return { kind: 'rejected', reason: 'token subject mismatch' };
+  }
+  return { kind: 'authorized', userId, clientId };
+}
+
+/**
+ * Checks that a value carries an upgrade URL.
+ *
+ * - verifies the full claimed shape: object with a string-or-undefined `url`
+ * - narrows `unknown` adapter args without casts.
+ *
+ * @param value Candidate upgrade request value.
+ * @return True when the value has a usable URL field.
+ */
+function hasUpgradeUrl(value: unknown): value is { url?: string } {
+  if (typeof value !== 'object' || value === null || !('url' in value)) {
+    return false;
+  }
+  const url = value.url;
+  return url === undefined || typeof url === 'string';
 }

@@ -1,10 +1,12 @@
 /**
- * Test suite for canonical env flag parsing.
+ * Test suite for canonical env flag and bounded-int parsing.
  *
  * - accepts the `true`/`1`/`yes` truthy set case-insensitively with padding
- * - rejects missing, blank, falsy, and unrecognized values.
+ * - rejects missing, blank, falsy, and unrecognized values by default
+ * - options: default-on gates return their default for absent/unknown input
+ *   and warn on unknown only when asked.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { parseBoundedInt, parseEnvFlag } from './env';
 
 describe('parseEnvFlag', () => {
@@ -24,6 +26,34 @@ describe('parseEnvFlag', () => {
     expect(parseEnvFlag('0')).toBe(false);
     expect(parseEnvFlag('no')).toBe(false);
     expect(parseEnvFlag('bogus')).toBe(false);
+  });
+
+  it('returns the configured default for missing, blank, and unknown values', () => {
+    expect(parseEnvFlag(undefined, { defaultValue: true })).toBe(true);
+    expect(parseEnvFlag('', { defaultValue: true })).toBe(true);
+    expect(parseEnvFlag('bogus', { defaultValue: true })).toBe(true);
+    expect(parseEnvFlag('bogus', { defaultValue: false })).toBe(false);
+  });
+
+  it('warns on unknown values only when asked', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      parseEnvFlag('bogus', {
+        defaultValue: true,
+        warnOnUnknown: true,
+        label: 'OTEL_ENABLED',
+      });
+
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn.mock.calls[0]?.[0]).toContain('bogus');
+
+      parseEnvFlag('bogus');
+      parseEnvFlag('true', { warnOnUnknown: true, label: 'OTEL_ENABLED' });
+
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

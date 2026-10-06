@@ -118,9 +118,9 @@ describe('UserTopicService', () => {
   });
 
   it('subscribes once on the first connect for a user', async () => {
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
     await flushBackground();
-    service.handleConnect(connectEvent('user-123', 'client-2', 2));
+    void service.handleConnect(connectEvent('user-123', 'client-2', 2));
     await flushBackground();
 
     expect(subscriber.subscribe).toHaveBeenCalledTimes(1);
@@ -131,8 +131,8 @@ describe('UserTopicService', () => {
   });
 
   it('subscribes independently per user', async () => {
-    service.handleConnect(connectEvent('user-1', 'client-1', 1));
-    service.handleConnect(connectEvent('user-2', 'client-2', 1));
+    void service.handleConnect(connectEvent('user-1', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-2', 'client-2', 1));
     await flushBackground();
 
     expect(subscriber.subscribe).toHaveBeenCalledTimes(2);
@@ -147,21 +147,21 @@ describe('UserTopicService', () => {
   });
 
   it('does not unsubscribe until the last disconnect', async () => {
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
-    service.handleConnect(connectEvent('user-123', 'client-2', 2));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-2', 2));
     await flushBackground();
 
-    service.handleDisconnect(disconnectEvent('user-123', 'client-1', 1));
+    void service.handleDisconnect(disconnectEvent('user-123', 'client-1', 1));
     await flushBackground();
 
     expect(subscriber.unsubscribe).not.toHaveBeenCalled();
   });
 
   it('unsubscribes on the last disconnect', async () => {
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
     await flushBackground();
 
-    service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
+    void service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
     await flushBackground();
 
     expect(subscriber.unsubscribe).toHaveBeenCalledTimes(1);
@@ -169,11 +169,11 @@ describe('UserTopicService', () => {
   });
 
   it('only unsubscribes the disconnected user when others stay connected', async () => {
-    service.handleConnect(connectEvent('user-1', 'client-1', 1));
-    service.handleConnect(connectEvent('user-2', 'client-2', 1));
+    void service.handleConnect(connectEvent('user-1', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-2', 'client-2', 1));
     await flushBackground();
 
-    service.handleDisconnect(disconnectEvent('user-1', 'client-1', 0));
+    void service.handleDisconnect(disconnectEvent('user-1', 'client-1', 0));
     await flushBackground();
 
     expect(subscriber.unsubscribe).toHaveBeenCalledTimes(1);
@@ -181,19 +181,19 @@ describe('UserTopicService', () => {
   });
 
   it('ignores a disconnect for an unclaimed channel', async () => {
-    service.handleDisconnect(disconnectEvent('ghost', 'client-9', 0));
+    void service.handleDisconnect(disconnectEvent('ghost', 'client-9', 0));
     await flushBackground();
 
     expect(subscriber.unsubscribe).not.toHaveBeenCalled();
   });
 
   it('ignores a duplicated disconnect without a second unsubscribe', async () => {
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
     await flushBackground();
-    service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
+    void service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
     await flushBackground();
 
-    service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
+    void service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
     await flushBackground();
 
     expect(subscriber.unsubscribe).toHaveBeenCalledTimes(1);
@@ -202,7 +202,7 @@ describe('UserTopicService', () => {
   it('retries subscribe within budget and stays claimed after recovery', async () => {
     subscriber.subscribe.mockRejectedValueOnce(new Error('READONLY'));
 
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
 
     await vi.waitFor(
       () => {
@@ -210,7 +210,7 @@ describe('UserTopicService', () => {
       },
       { timeout: 3000 },
     );
-    service.handleConnect(connectEvent('user-123', 'client-2', 2));
+    void service.handleConnect(connectEvent('user-123', 'client-2', 2));
     await flushBackground();
 
     expect(subscriber.subscribe).toHaveBeenCalledTimes(2);
@@ -219,7 +219,7 @@ describe('UserTopicService', () => {
   it('releases the claim when subscribe keeps failing so the next connect retries', async () => {
     subscriber.subscribe.mockRejectedValue(new Error('READONLY'));
 
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
 
     await vi.waitFor(
       () => {
@@ -229,7 +229,7 @@ describe('UserTopicService', () => {
     );
     await flushBackground();
     subscriber.subscribe.mockResolvedValue(undefined);
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
 
     await vi.waitFor(
       () => {
@@ -240,11 +240,11 @@ describe('UserTopicService', () => {
   });
 
   it('retries unsubscribe within budget on failure', async () => {
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
     await flushBackground();
     subscriber.unsubscribe.mockRejectedValueOnce(new Error('READONLY'));
 
-    service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
+    void service.handleDisconnect(disconnectEvent('user-123', 'client-1', 0));
 
     await vi.waitFor(
       () => {
@@ -257,8 +257,8 @@ describe('UserTopicService', () => {
   it('never throws to the caller when subscribe keeps failing', async () => {
     subscriber.subscribe.mockRejectedValue(new Error('READONLY'));
 
-    expect(() =>
-      service.handleConnect(connectEvent('user-123', 'client-1', 1)),
+    expect(
+      () => void service.handleConnect(connectEvent('user-123', 'client-1', 1)),
     ).not.toThrow();
 
     await vi.waitFor(
@@ -273,7 +273,7 @@ describe('UserTopicService', () => {
     const debugSpy = vi
       .spyOn(Logger.prototype, 'debug')
       .mockImplementation(() => undefined);
-    service.handleConnect(connectEvent('user-123', 'client-1', 1));
+    void service.handleConnect(connectEvent('user-123', 'client-1', 1));
     await flushBackground();
     const listener = subscriber.subscribe.mock.calls[0]?.[1];
     if (typeof listener !== 'function') {

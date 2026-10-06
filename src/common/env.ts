@@ -1,24 +1,78 @@
 /**
- * Canonical parsing for strict opt-in env flags.
+ * Canonical parsing for env flags and bounded integers.
  *
- * - single owner of the `true`/`1`/`yes` truthy set shared by bootstrap gates
- * - missing, blank, and unrecognized values are false so a typo cannot enable
- *   a gate; gates needing default-true or warn-on-unknown semantics layer
- *   that on top (see `tracing.parseEnabled`).
+ * - single owner of the `true`/`1`/`yes` truthy set shared by every gate
+ * - `parseEnvFlag` covers both opt-in flags (default false, unknown silent)
+ *   and default-on gates (default true, warn on unknown) via options, so no
+ *   caller maintains a second truthy set.
  */
 
 /**
- * Parses a strict opt-in env flag.
+ * Values that enable a flag, compared case-insensitively after trimming.
+ */
+const ENABLED_VALUES: ReadonlySet<string> = new Set(['true', '1', 'yes']);
+
+/**
+ * Values that explicitly disable a flag, compared case-insensitively.
+ */
+const DISABLED_VALUES: ReadonlySet<string> = new Set(['false', '0', 'no']);
+
+/**
+ * Tuning knobs for `parseEnvFlag`.
+ */
+export interface EnvFlagOptions {
+  /**
+   * Returned for missing, blank, and unrecognized values.
+   *
+   * - defaults to false so a typo cannot enable an opt-in gate
+   * - default-on gates pass true and layer warn-on-unknown on top.
+   */
+  defaultValue?: boolean;
+  /**
+   * Warns via `console.warn` on unrecognized values instead of staying silent.
+   *
+   * - defaults to false; default-on gates enable it so a typo cannot
+   *   silently flip one environment while others stay enabled.
+   */
+  warnOnUnknown?: boolean;
+  /**
+   * Env name used in the warn message, required when `warnOnUnknown` is set.
+   */
+  label?: string;
+}
+
+/**
+ * Parses an env flag with fail-explicit semantics.
  *
- * - trims and lowercases before comparing against the truthy set
- * - missing, blank, and unrecognized values are false.
+ * - trims and lowercases before comparing against the truthy/falsy sets
+ * - missing, blank, and unrecognized values return `defaultValue`.
  *
  * @param value Raw env value.
- * @return True only for `true`/`1`/`yes`.
+ * @param options Default for absent/unknown input plus warn behavior.
+ * @return True only for `true`/`1`/`yes`, unless defaulted otherwise.
  */
-export function parseEnvFlag(value: string | undefined): boolean {
+export function parseEnvFlag(
+  value: string | undefined,
+  options: EnvFlagOptions = {},
+): boolean {
+  const { defaultValue = false, warnOnUnknown = false, label } = options;
   const normalized = value?.trim().toLowerCase() ?? '';
-  return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  if (normalized === '') {
+    return defaultValue;
+  }
+  if (ENABLED_VALUES.has(normalized)) {
+    return true;
+  }
+  if (DISABLED_VALUES.has(normalized)) {
+    return false;
+  }
+  if (warnOnUnknown) {
+    const detail = label === undefined ? 'flag' : label;
+    console.warn(
+      `[env] unknown ${detail} "${value}", defaulting to ${defaultValue ? 'enabled' : 'disabled'}`,
+    );
+  }
+  return defaultValue;
 }
 
 /**

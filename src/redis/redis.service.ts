@@ -12,11 +12,8 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import type { RedisClientType, SetOptions } from 'redis';
-import {
-  attachRedisErrorHandler,
-  connectRedisClient,
-  quitRedisClient,
-} from './redis.lifecycle';
+import { withBoundedRetry } from '../common/retry';
+import { quitRedisClient } from './redis.lifecycle';
 import { REDIS_CLIENT } from './redis.constants';
 
 export interface RedisEntry {
@@ -35,7 +32,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
 
   constructor(@Inject(REDIS_CLIENT) private readonly client: RedisClientType) {
-    attachRedisErrorHandler(this.client, (err: Error) => {
+    this.client.on('error', (err: Error) => {
       this.logger.error(`Redis client error: ${err.message}`);
     });
   }
@@ -43,13 +40,12 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   /**
    * Connects to Redis on module init with bounded exponential-backoff retries.
    *
-   * - delegates to the shared lifecycle helper, throws when attempts fail.
+   * - delegates to the shared retry helper, throws when attempts fail.
    */
   async onModuleInit(): Promise<void> {
-    await connectRedisClient(
-      this.client,
-      'Failed to connect to Redis after 10 attempts',
-    );
+    await withBoundedRetry(() => this.client.connect(), {
+      failureMessage: 'Failed to connect to Redis after 10 attempts',
+    });
   }
 
   /**

@@ -137,18 +137,6 @@ describe('PresenceService', () => {
     });
   });
 
-  it('deletes unconditionally without a token for legacy callers', async () => {
-    await service.trackDisconnect(requireClientId('client-456'));
-
-    expect(send).toHaveBeenCalledTimes(1);
-    const command = send.mock.calls[0]?.[0];
-    expect(command).toBeInstanceOf(DeleteItemCommand);
-    expect((command as DeleteItemCommand).input).toEqual({
-      TableName: 'Clients',
-      Key: { clientId: { S: 'client-456' } },
-    });
-  });
-
   it('resolves without a warn log when a stale disconnect loses its race', async () => {
     send.mockRejectedValueOnce(
       Object.assign(new Error('condition failed'), {
@@ -188,13 +176,16 @@ describe('PresenceService', () => {
       .mockImplementation(() => undefined);
 
     await expect(
-      service.trackDisconnect(requireClientId('client-456')),
+      service.trackDisconnect(
+        requireClientId('client-456'),
+        'presence-token-1',
+      ),
     ).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('disconnect'));
   });
 
   it('upserts both rows on a fanned-out connect', async () => {
-    service.handleConnect({
+    void service.handleConnect({
       userId: requireUserId('user-123'),
       clientId: requireClientId('client-456'),
       token: 'presence-token-1',
@@ -208,7 +199,7 @@ describe('PresenceService', () => {
   });
 
   it('deletes the row conditional on the token on a fanned-out disconnect', async () => {
-    service.handleDisconnect({
+    void service.handleDisconnect({
       userId: requireUserId('user-123'),
       clientId: requireClientId('client-456'),
       token: 'presence-token-1',
