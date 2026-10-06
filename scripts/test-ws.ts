@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { sign } from 'jsonwebtoken';
 import { WebSocket } from 'ws';
+import { SEND_MESSAGE_OP } from '../src/ws/session.interface';
 
 const DEFAULT_ISSUER = 'test-issuer';
 const DEFAULT_AUDIENCE = 'test-audience';
@@ -190,7 +191,9 @@ async function main(): Promise<void> {
     console.log(`Received message: ${data.toString()}`);
   });
 
-  socket.send(JSON.stringify({ type: 'PING' }));
+  socket.send(
+    JSON.stringify({ op: SEND_MESSAGE_OP, target: userId, message: 'PING' }),
+  );
   console.log('PASS: message sent');
 
   console.log('Waiting 120 seconds before closing the connection');
