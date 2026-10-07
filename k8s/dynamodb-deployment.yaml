@@ -1,5 +1,7 @@
 # Runs DynamoDB Local (mirrors compose `dynamodb: amazon/dynamodb-local:3.3.1`).
-# Ephemeral, no PVC (compose parity). No env/args/probes.
+# Ephemeral, no PVC (compose parity). No env/args. Probes use tcpSocket:
+# DynamoDB Local serves a bare HTTP API on 8000 with no health path, so an
+# httpGet probe would fail on non-2xx status codes.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -23,3 +25,15 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+          livenessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3

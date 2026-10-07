@@ -1,7 +1,7 @@
 # Runs Redis (mirrors compose `redis: redis:7-alpine`).
-# Ephemeral, no PVC (compose parity). Password comes from app-secrets;
-# $(REDIS_PASSWORD) uses Kubernetes variable expansion. No k8s probes —
-# compose healthcheck (redis-cli ping) is intentionally not mirrored.
+# Ephemeral, no PVC (compose parity). Password comes from app-secrets.
+# Kubernetes expands $(REDIS_PASSWORD) using the container's environment.
+# Probes authenticate with redis-cli and run PING
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -32,3 +32,15 @@ spec:
           ports:
             - name: redis
               containerPort: 6379
+          livenessProbe:
+            exec:
+              command: ['redis-cli', '-a', '$(REDIS_PASSWORD)', 'ping']
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ['redis-cli', '-a', '$(REDIS_PASSWORD)', 'ping']
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
