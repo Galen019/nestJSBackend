@@ -1,21 +1,23 @@
 /**
- * OpenTelemetry tracing bootstrap (traces-only).
+ * OpenTelemetry bootstrap (traces + metrics).
  *
  * - Enabled by default, opt out with `OTEL_ENABLED=false`
- * - Starts `NodeSDK` with the OTLP/gRPC exporter plus HTTP + Express
- *   auto-instrumentation
+ * - Starts `NodeSDK` with the OTLP/gRPC trace exporter, the OTLP/HTTP
+ *   proto metrics exporter, plus HTTP + Express auto-instrumentation
  * - The SDK resolves `OTEL_TRACES_SAMPLER[_ARG]` natively; only the
- *   service-name default, the endpoint default, and the enabled gate live here
+ *   service-name default, the endpoint defaults, and the enabled gate live here
  * - Redacts the `key` query param (plus the SDK defaults) from incoming spans
  * - Exposes `isHealthRequest` and `buildHttpInstrumentation` for unit tests
  * - Never captures tokens, Authorization headers, message bodies, Redis keys,
  *   or Redis values.
  */
 
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
 import { ExpressInstrumentation } from '@opentelemetry/instrumentation-express';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
 import { resourceFromAttributes } from '@opentelemetry/resources';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import type { IncomingMessage } from 'node:http';
 import { parseEnvFlag } from './common/env';
@@ -30,6 +32,21 @@ import { parseEnvFlag } from './common/env';
  * - the `http://` scheme selects the exporter's insecure credentials.
  */
 export const DEFAULT_OTLP_ENDPOINT = 'http://jaeger:4317';
+
+/**
+ * Default OTLP/HTTP metrics endpoint (in-compose Prometheus).
+ *
+ * - Must stay in sync with the `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` default
+ *   in `docker-compose.yml`, which documents the same contract
+ * - `OTLPMetricExporter` (from `exporter-metrics-otlp-proto`) speaks
+ *   OTLP/HTTP with protobuf payloads, which Prometheus serves at
+ *   `/api/v1/otlp/v1/metrics` when started with `--web.enable-otlp-receiver`.
+ */
+export const DEFAULT_OTLP_METRICS_ENDPOINT =
+  'http://prometheus:9090/api/v1/otlp/v1/metrics';
+
+/** Default interval between metrics exports. */
+export const DEFAULT_METRICS_INTERVAL_MS = 15000;
 
 /** Default service name shown in the Jaeger UI. */
 export const DEFAULT_SERVICE_NAME = 'nestJS-server';
@@ -120,13 +137,28 @@ export function buildHttpInstrumentation(): HttpInstrumentation {
 }
 
 /**
+ * Resolves the OTLP/HTTP metrics endpoint.
+ *
+ * - trims the `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` value, falls back to the
+ *   in-compose Prometheus default when missing or blank
+ * - pure test hook so endpoint mapping is asserted without starting the SDK.
+ *
+ * @param value Raw env value.
+ * @return Endpoint URL for the metrics exporter.
+ */
+export function resolveMetricsEndpoint(value: string | undefined): string {
+  return value?.trim() || DEFAULT_OTLP_METRICS_ENDPOINT;
+}
+
+/**
  * Starts the OpenTelemetry SDK once.
  *
  * - no-op when `OTEL_ENABLED` disables tracing or when already started
+ * - starts traces via OTLP/gRPC plus metrics via OTLP/HTTP protobuf
  * - never throws: exporter/startup failures are logged and the app keeps serving
  * - registers a best-effort shutdown hook for `SIGTERM`/`SIGINT`.
  *
- * @return Nothing, the global tracer provider is registered as a side effect.
+ * @return Nothing, the global tracer and meter providers are registered as a side effect.
  */
 export function initTracing(): void {
   if (started) {
@@ -141,6 +173,15 @@ export function initTracing(): void {
         process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ||
         DEFAULT_OTLP_ENDPOINT,
     });
+    const metricExporter = new OTLPMetricExporter({
+      url: resolveMetricsEndpoint(
+        process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT,
+      ),
+    });
+    const metricReader = new PeriodicExportingMetricReader({
+      exporter: metricExporter,
+      exportIntervalMillis: DEFAULT_METRICS_INTERVAL_MS,
+    });
     sdk = new NodeSDK({
       resource: resourceFromAttributes({
         'service.name':
@@ -149,6 +190,7 @@ export function initTracing(): void {
           process.env.NODE_ENV?.trim() || 'development',
       }),
       traceExporter,
+      metricReaders: [metricReader],
       instrumentations: [
         buildHttpInstrumentation(),
         new ExpressInstrumentation(),
@@ -187,7 +229,7 @@ function registerShutdownHook(): void {
 }
 
 /**
- * Shuts down the SDK and flushes pending spans.
+ * Shuts down the SDK and flushes pending spans and metrics.
  *
  * - no-op when tracing never started
  * - resets state so tests can re-initialize.
