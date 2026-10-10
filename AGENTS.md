@@ -80,3 +80,5 @@ Ask as well when you are *not* in doubt but are about to depart from a documente
 - Smallest diff; don't touch `dist/`, `coverage/`, `node_modules/`, `*.tsbuildinfo`; don't upgrade Nest/Node/Vitest unasked. After code changes verify with `npm run build` (plus `npm test`/`test:e2e` when behavior changed). Docker: keep non-root `USER node`, `npm ci --omit=dev`, `EXPOSE 3000`, `CMD ["node", "dist/main"]`.
 - Windows-only shell: PowerShell, `;` to chain, `\` paths, quoted paths.
 - Do not use linux commands like head, tail.
+- Never use emdash
+- Make no mistakes

@@ -27,6 +27,12 @@ services:
       # serves on 4317; 4318 is OTLP/HTTP and needs the HTTP exporter instead.
       # OTEL_TRACES_SAMPLER is read natively by the SDK (no app mapping).
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4317}
+      # OTLP/HTTP metrics endpoint. Must stay in sync with DEFAULT_OTLP_METRICS_ENDPOINT
+      # in src/tracing.ts. The server uses the proto HTTP exporter, which Prometheus
+      # serves at /api/v1/otlp/v1/metrics; OTEL_EXPORTER_OTLP_METRICS_PROTOCOL is
+      # operator documentation (the exporter is hardcoded to http/protobuf).
+      - OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-http://prometheus:9090/api/v1/otlp/v1/metrics}
+      - OTEL_EXPORTER_OTLP_METRICS_PROTOCOL=${OTEL_EXPORTER_OTLP_METRICS_PROTOCOL:-http/protobuf}
       - OTEL_TRACES_SAMPLER=${OTEL_TRACES_SAMPLER:-parentbased_always_on}
       - DYNAMODB_ENDPOINT=http://dynamodb:8000
       - AWS_REGION=${AWS_REGION:-us-east-1}
@@ -38,6 +44,18 @@ services:
       - '127.0.0.1:16686:16686'
       - '127.0.0.1:4317:4317'
       - '127.0.0.1:4318:4318'
+    restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-otlp-receiver'
+    ports:
+      - '127.0.0.1:9090:9090'
+    volumes:
+      - ./prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
     restart: unless-stopped
   redis:
     image: redis:7-alpine
@@ -58,3 +76,6 @@ services:
     ports:
       - '127.0.0.1:${DYNAMODB_PORT:-8000}:8000'
     restart: unless-stopped
+
+volumes:
+  prometheus-data:

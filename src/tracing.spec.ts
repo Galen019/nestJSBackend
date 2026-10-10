@@ -4,11 +4,14 @@
  * - enable toggle (defaults, explicit values, garbage warns and stays enabled)
  * - health-request matching for the HTTP ignore hook
  * - HTTP instrumentation redacts the `key` query param on server spans
+ * - metrics endpoint resolution (defaults, trims, falls back on blank)
  * - disabled `initTracing` stays a noop and never starts the SDK.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
+  DEFAULT_METRICS_INTERVAL_MS,
   DEFAULT_OTLP_ENDPOINT,
+  DEFAULT_OTLP_METRICS_ENDPOINT,
   DEFAULT_SERVICE_NAME,
   REDACTED_QUERY_PARAMS_SERVER,
   buildHttpInstrumentation,
@@ -16,6 +19,7 @@ import {
   isHealthRequest,
   isTracingStarted,
   parseEnabled,
+  resolveMetricsEndpoint,
   shutdownTracing,
 } from './tracing';
 
@@ -112,6 +116,27 @@ describe('tracing lifecycle', () => {
 
   it('keeps the documented endpoint and service defaults', () => {
     expect(DEFAULT_OTLP_ENDPOINT).toBe('http://jaeger:4317');
+    expect(DEFAULT_OTLP_METRICS_ENDPOINT).toBe(
+      'http://prometheus:9090/api/v1/otlp/v1/metrics',
+    );
+    expect(DEFAULT_METRICS_INTERVAL_MS).toBe(15000);
     expect(DEFAULT_SERVICE_NAME).toBe('nestJS-server');
+  });
+
+  it('resolves the metrics endpoint with trim and fallback', () => {
+    expect(resolveMetricsEndpoint(undefined)).toBe(
+      DEFAULT_OTLP_METRICS_ENDPOINT,
+    );
+    expect(resolveMetricsEndpoint('')).toBe(DEFAULT_OTLP_METRICS_ENDPOINT);
+    expect(resolveMetricsEndpoint('   ')).toBe(DEFAULT_OTLP_METRICS_ENDPOINT);
+    expect(
+      resolveMetricsEndpoint('  http://custom:9090/api/v1/otlp/v1/metrics  '),
+    ).toBe('http://custom:9090/api/v1/otlp/v1/metrics');
+  });
+
+  it('starts the SDK with metrics wired when enabled', () => {
+    process.env.OTEL_ENABLED = 'true';
+    initTracing();
+    expect(isTracingStarted()).toBe(true);
   });
 });

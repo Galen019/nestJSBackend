@@ -16,12 +16,11 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import request from 'supertest';
-import type { SetOptions } from 'redis';
 import { AppModule } from './../src/app.module';
 import { createGlobalValidationPipe } from './../src/app.pipes';
 import { DynamoService } from './../src/dynamo/dynamo.service';
 import { DEFAULT_SET_TTL_SECONDS } from './../src/redis/redis.constants';
-import { RedisService, type RedisEntry } from './../src/redis/redis.service';
+import { RedisService } from './../src/redis/redis.service';
 import { USER_TOPIC_SUBSCRIBER } from './../src/user-topics/user-topic.service';
 import {
   TEST_JWT_AUDIENCE,
@@ -30,21 +29,13 @@ import {
   signTestToken,
 } from './auth-test.helper';
 import { createDynamoFake, type DynamoFake } from './dynamo-test.helper';
+import { createRedisFake, type RedisFake } from './redis-test.helper';
 import { createSubscriberFake } from './subscriber-test.helper';
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
   let dynamoFake: DynamoFake;
-  let redisFake: {
-    ping: () => Promise<string>;
-    isReady: () => boolean;
-    getEntry: (key: string) => Promise<RedisEntry | null>;
-    set: (
-      key: string,
-      value: string,
-      options?: SetOptions,
-    ) => Promise<string | null>;
-  };
+  let redisFake: RedisFake;
 
   beforeEach(async () => {
     process.env.JWT_PUBLIC_KEY_PATH = join(
@@ -56,18 +47,7 @@ describe('AppController (e2e)', () => {
     process.env.JWT_ISSUER = TEST_JWT_ISSUER;
     process.env.JWT_AUDIENCE = TEST_JWT_AUDIENCE;
     dynamoFake = createDynamoFake();
-    redisFake = {
-      ping: async () => 'PONG',
-      isReady: () => true,
-      getEntry: vi.fn<(key: string) => Promise<RedisEntry | null>>(),
-      set: vi.fn<
-        (
-          key: string,
-          value: string,
-          options?: SetOptions,
-        ) => Promise<string | null>
-      >(),
-    };
+    redisFake = createRedisFake();
     const subscriberFake = createSubscriberFake();
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
