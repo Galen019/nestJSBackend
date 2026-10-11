@@ -15,3 +15,7 @@ spec:
       protocol: TCP
       port: 3000
       targetPort: 3000
+    - name: metrics
+      protocol: TCP
+      port: 9464
+      targetPort: 9464

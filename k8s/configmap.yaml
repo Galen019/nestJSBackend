@@ -25,3 +25,4 @@ data:
   OTEL_SERVICE_NAME: nestJS-server
   OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
   OTEL_TRACES_SAMPLER: parentbased_always_on
+  METRICS_ENABLED: 'true'

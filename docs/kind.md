@@ -77,13 +77,24 @@ Open:
 http://localhost:16686
 ```
 
-## 9. Run the Redis probe
+## 9. Access Prometheus
+Forward the Prometheus UI:
+```
+kubectl -n backend-lab port-forward svc/prometheus 9090:9090
+```
+Open:
+```
+http://localhost:9090
+```
+Check Status > Targets shows `app:9464` UP.
+
+## 10. Run the Redis probe
 With the application available:
 ```
 npx ts-node scripts/test-redis.ts
 ```
 
-## 10. Inspect Kubernetes resources
+## 11. Inspect Kubernetes resources
 
 ```
 kubectl -n backend-lab get pods
@@ -93,7 +104,7 @@ kubectl -n backend-lab get configmaps
 kubectl -n backend-lab get secrets
 ```
 
-## 11. Clean up
+## 12. Clean up
 
 ```
 kubectl delete namespace backend-lab

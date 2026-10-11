@@ -1,0 +1,63 @@
+# Runs Prometheus (mirrors compose `prometheus: prom/prometheus:v3.13.2`).
+# Exposes:
+#   - Web UI and API 9090
+#   - Health endpoints /-/healthy and /-/ready
+# Ephemeral storage via emptyDir (compose parity, no PVC).
+# kubectl -n backend-lab port-forward svc/prometheus 9090:9090
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.13.2
+          args:
+            - '--config.file=/etc/prometheus/prometheus.yml'
+            - '--storage.tsdb.path=/prometheus'
+          ports:
+            - name: http
+              containerPort: 9090
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus/prometheus.yml
+              subPath: prometheus.yml
+              readOnly: true
+            - name: storage
+              mountPath: /prometheus
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+            items:
+              - key: prometheus.yml
+                path: prometheus.yml
+            defaultMode: 0444
+        - name: storage
+          emptyDir: {}
