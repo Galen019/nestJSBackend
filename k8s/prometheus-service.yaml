@@ -1,0 +1,17 @@
+# Gives Prometheus its `prometheus:9090` DNS name + lab UI on 9090.
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  type: ClusterIP
+  selector:
+    app: prometheus
+  ports:
+    - name: http
+      protocol: TCP
+      port: 9090
+      targetPort: 9090
