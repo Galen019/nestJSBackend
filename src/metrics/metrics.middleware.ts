@@ -1,13 +1,8 @@
 /**
- * Global HTTP metrics middleware.
- *
- * - Runs before guards so 401s, 400s, and 404s are all observed; an
- *   interceptor would miss guard rejections, which is why this is middleware
- * - Observes on response finish when the route template is resolved
- * - Labels use the route template only, never query values or raw paths
- * - Probe exclusion lives in MetricsModule.exclude, not here
- * - The unknown-path e2e test is the contract that forRoutes('*') still
- *   carries unmatched requests through this middleware.
+ * Records HTTP metrics before guards and observes them when responses finish.
+ * Labels use route templates only; probe exclusions are configured in
+ * MetricsModule. The unknown-path e2e test verifies unmatched requests pass
+ * through this middleware.
  */
 import { Injectable, type NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';

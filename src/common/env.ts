@@ -1,55 +1,33 @@
-/**
- * Canonical parsing for env flags and bounded integers.
- *
- * - single owner of the `true`/`1`/`yes` truthy set shared by every gate
- * - `parseEnvFlag` covers both opt-in flags (default false, unknown silent)
- *   and default-on gates (default true, warn on unknown) via options, so no
- *   caller maintains a second truthy set.
- */
+/** Shared parsers for environment flags and bounded integers. */
 
-/**
- * Values that enable a flag, compared case-insensitively after trimming.
- */
+/** Case-insensitive values that enable a flag. */
 const ENABLED_VALUES: ReadonlySet<string> = new Set(['true', '1', 'yes']);
 
-/**
- * Values that explicitly disable a flag, compared case-insensitively.
- */
+/** Case-insensitive values that disable a flag. */
 const DISABLED_VALUES: ReadonlySet<string> = new Set(['false', '0', 'no']);
 
-/**
- * Tuning knobs for `parseEnvFlag`.
- */
+/** Options for `parseEnvFlag`. */
 export interface EnvFlagOptions {
   /**
-   * Returned for missing, blank, and unrecognized values.
-   *
-   * - defaults to false so a typo cannot enable an opt-in gate
-   * - default-on gates pass true and layer warn-on-unknown on top.
+   * Value for missing, blank, or unrecognized input; defaults to false.
    */
   defaultValue?: boolean;
   /**
-   * Warns via `console.warn` on unrecognized values instead of staying silent.
-   *
-   * - defaults to false; default-on gates enable it so a typo cannot
-   *   silently flip one environment while others stay enabled.
+   * Warn on unrecognized values; defaults to false.
    */
   warnOnUnknown?: boolean;
   /**
-   * Env name used in the warn message, required when `warnOnUnknown` is set.
+   * Environment name included in warnings.
    */
   label?: string;
 }
 
 /**
- * Parses an env flag with fail-explicit semantics.
- *
- * - trims and lowercases before comparing against the truthy/falsy sets
- * - missing, blank, and unrecognized values return `defaultValue`.
+ * Parses a flag, using the configured default for missing or unknown values.
  *
  * @param value Raw env value.
- * @param options Default for absent/unknown input plus warn behavior.
- * @return True only for `true`/`1`/`yes`, unless defaulted otherwise.
+ * @param options Default and warning behavior.
+ * @return Parsed flag value.
  */
 export function parseEnvFlag(
   value: string | undefined,
@@ -75,14 +53,7 @@ export function parseEnvFlag(
   return defaultValue;
 }
 
-/**
- * Bounds for a shared integer env parser.
- *
- * - `defaultValue` is returned for missing or empty input
- * - `min` is the smallest accepted integer
- * - `max` is omitted for unbounded values, set to cap the range
- * - `label` is the env name used in the fail-closed error message.
- */
+/** Options and bounds for `parseBoundedInt`. */
 export interface BoundedIntOptions {
   defaultValue: number;
   min: number;
@@ -91,15 +62,11 @@ export interface BoundedIntOptions {
 }
 
 /**
- * Parses a bounded integer env value with fail-closed semantics.
- *
- * - missing or empty input returns the default
- * - integer values only, no suffix parsing
- * - throws when non-integer, below `min`, or above `max`.
+ * Parses an integer within the configured bounds or throws.
  *
  * @param raw Raw env value.
- * @param options Default, bounds, and label for the error message.
- * @return The validated integer.
+ * @param options Default value, bounds, and error label.
+ * @return Validated integer.
  */
 export function parseBoundedInt(
   raw: string | undefined,

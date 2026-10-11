@@ -1,34 +1,21 @@
-/**
- * Static DynamoDB table definitions for ephemeral local bootstrap.
- *
- * - single source of truth for `ensure-exists` table creation on startup
- * - seven tables; `defineTable` injects PAY_PER_REQUEST billing structurally
- * - TTL rides on the table entry (`ttlAttribute`); CreateTable has no TTL
- *   field, so the service reconciles it via TimeToLive after the table is ACTIVE
- * - attribute docs: ids/names as S, timestamps as N
- */
+/** Table schemas for local bootstrap, including post-create TTL settings. */
 import type { CreateTableCommandInput } from '@aws-sdk/client-dynamodb';
 import { TTL_ATTRIBUTE_NAME } from './ttl';
 
-/**
- * Static table shape: CreateTable input plus optional TTL attribute.
- */
+/** CreateTable input with an optional TTL attribute. */
 export interface TableDefinition {
-  /** CreateTable input sent on bootstrap. */
+  /** Input for CreateTable. */
   create: CreateTableCommandInput;
-  /** TTL attribute reconciled after the table is ACTIVE; absent means no TTL. */
+  /** Reconciled after table activation; omitted when TTL is unused. */
   ttlAttribute?: string;
 }
 
 /**
- * Builds a table definition with PAY_PER_REQUEST billing.
+ * Adds PAY_PER_REQUEST billing and an optional TTL attribute.
  *
- * - injects the billing mode so call sites cannot drift from it
- * - attaches the TTL attribute for expiring tables only.
- *
- * @param create CreateTable input without the billing mode.
- * @param ttlAttribute TTL attribute for expiring tables.
- * @return The table definition with billing applied.
+ * @param create CreateTable input without billing mode.
+ * @param ttlAttribute Optional TTL attribute.
+ * @return Completed table definition.
  */
 function defineTable(
   create: Omit<CreateTableCommandInput, 'BillingMode'>,

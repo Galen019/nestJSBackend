@@ -1,19 +1,10 @@
-/**
- * Redis DI token, env config, and client factory.
- *
- * - REDIS_CLIENT: injection token
- * - getRedisConfig: reads REDIS_HOST/PORT/PASSWORD
- * - createRedisClient: single owner of the client-construction policy,
- *   shared by the command client and subscriber-only connections.
- */
+/** Redis injection token, configuration, and shared client factory. */
 import { createClient, type RedisClientType } from 'redis';
 import { parseBoundedInt } from '../common/env';
 
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
-/**
- * Default TTL applied at the HTTP edge when POST /redis omits expiration.
- */
+/** Default TTL for POST /redis when expiration is omitted. */
 export const DEFAULT_SET_TTL_SECONDS = 3600;
 
 export interface RedisConfig {
@@ -27,13 +18,10 @@ const DEFAULT_REDIS_PORT = 6379;
 const MAX_REDIS_PORT = 65535;
 
 /**
- * Parses a raw `REDIS_PORT` value into a port number.
+ * Validates the configured Redis port.
  *
- * - delegates to the shared bounded-int parser, one decision point
- *   for integer env strictness across the codebase.
- *
- * @param raw Raw env value for the Redis port.
- * @return The validated port number.
+ * @param raw Raw `REDIS_PORT` value.
+ * @return Validated port number.
  */
 function parsePort(raw: string | undefined): number {
   return parseBoundedInt(raw, {
@@ -54,13 +42,8 @@ export function getRedisConfig(): RedisConfig {
 }
 
 /**
- * Creates a Redis client from the shared env config.
- *
- * - single owner of the construction policy (socket, capped reconnect, auth,
- *   no offline queue) for every connection in the process
- * - returns an unconnected client; callers connect via the lifecycle helpers
- * - subscriber-only connections use this too but stay separate clients,
- *   because a subscribed connection cannot run regular commands.
+ * Creates an unconnected client using shared Redis settings.
+ * Subscriber connections use separate clients from command connections.
  *
  * @return An unconnected Redis client.
  */

@@ -1,17 +1,4 @@
-/**
- * Lifecycle wrapper around the injected DynamoDB client.
- *
- * - connects on module init by listing tables with bounded retries
- * - ensures ephemeral local tables from static definitions when gated on
- * - table bootstrap is fail-open: failures are logged loudly and boot
- *   continues, because presence writes are best-effort and the app can
- *   serve without ensured tables
- * - bootstrap needs `dynamodb:CreateTable`, `dynamodb:DescribeTable`,
- *   `dynamodb:DescribeTimeToLive`, and `dynamodb:UpdateTimeToLive` on the
- *   configured endpoint; without them bootstrap is skipped with an error
- *   log while reads/writes degrade to warn-and-swallow
- * - exposes `ping()`/`getClient()` for health checks and future domains.
- */
+/** DynamoDB connection, local table bootstrap, and client lifecycle. */
 import {
   Inject,
   Injectable,
@@ -33,12 +20,7 @@ import { isAwsError } from '../common/aws-error';
 import { DYNAMO_CLIENT, getDynamoBootstrapConfig } from './dynamo.constants';
 import { TABLE_DEFINITIONS } from './table-defs';
 
-/**
- * Lifecycle wrapper around the injected `DYNAMO_CLIENT`.
- *
- * quits gracefully on module destroy
- * exposes `ping()`/`getClient()` for health checks and future domains.
- */
+/** Manages the injected client and exposes readiness and access helpers. */
 @Injectable()
 export class DynamoService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DynamoService.name);
@@ -51,22 +33,10 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
   constructor(@Inject(DYNAMO_CLIENT) private readonly client: DynamoDBClient) {}
 
   /**
-   * Pings DynamoDB then ensures local tables when the bootstrap gate allows.
+   * Retries readiness checks, then bootstraps local tables when enabled.
+   * Connection failures abort startup; bootstrap failures are logged and tolerated.
    *
-   * - delegates the retry policy to the shared `withBoundedRetry` helper
-   * - probes via `ping()` so the readiness check has a single construction site
-   * - the outer loop covers boot-time unavailability (compose waits only for
-   *   `service_started`); the SDK's own per-request retries still cover
-   *   transient failures inside each attempt
-   * - skips table creation for non-local endpoints unless forced
-   * - ping failures still throw (readiness); bootstrap failures are fail-open:
-   *   logged loudly via `error` and boot continues, since presence writes
-   *   are best-effort and must never brick the app when IAM lacks the table
-   *   admin actions (`CreateTable`, `DescribeTable`, `DescribeTimeToLive`,
-   *   `UpdateTimeToLive`)
-   * - throws the last ping error when all connect attempts fail.
-   *
-   * @return Resolves when DynamoDB answers, with tables ensured best-effort.
+   * @return Resolves when DynamoDB answers; table setup is best-effort.
    */
   async onModuleInit(): Promise<void> {
     await withBoundedRetry(() => this.ping(), {
@@ -104,11 +74,7 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Pings DynamoDB for readiness probes.
-   *
-   * - sends `ListTables` with limit 1
-   * - resolves without effect when DynamoDB answers
-   * - rejects with the client error when DynamoDB is unreachable.
+   * Checks DynamoDB readiness with a one-item `ListTables` request.
    *
    * @return Resolves on success.
    */
@@ -116,23 +82,15 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
     await this.client.send(new ListTablesCommand({ Limit: 1 }));
   }
 
-  /**
-   * Returns the underlying client for future domains.
-   *
-   * @return The injected DynamoDB client.
-   */
+  /** @return The injected DynamoDB client. */
   getClient(): DynamoDBClient {
     return this.client;
   }
 
   /**
-   * Ensures every static table exists with TTL reconciled per table.
+   * Ensures each static table exists and reconciles its TTL.
    *
-   * - iterates `TABLE_DEFINITIONS` sequentially to stay within local limits
-   * - reconciles TTL right after its table is ACTIVE, including pre-existing
-   *   tables, so each table is fully ensured before moving to the next.
-   *
-   * @return Resolves when all tables are active with TTL ensured.
+   * @return Resolves when all tables are active and TTL is configured.
    */
   private async ensureTablesExist(): Promise<void> {
     for (const table of TABLE_DEFINITIONS) {
@@ -146,15 +104,10 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Ensures a single table exists and is active.
+   * Creates a missing table and waits for it to become active.
    *
-   * - describes first so idempotent boots skip a doomed CreateTable call
-   * - creates on ResourceNotFound, waits for ACTIVE otherwise
-   * - treats ResourceInUse races as success and waits for ACTIVE
-   * - throws when creation or activation fails after retries.
-   *
-   * @param definition CreateTable input from the static file.
-   * @return Resolves when the table status is ACTIVE.
+   * @param definition Static CreateTable input.
+   * @return Resolves when the table is active.
    */
   private async ensureTable(
     definition: CreateTableCommandInput,
@@ -182,14 +135,10 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
     await this.waitUntilActive(tableName);
   }
 
-  /**
-   * Waits until a table reports ACTIVE.
-   *
-   * - polls DescribeTable with the shared bounded-retry policy
-   * - throws when the table never becomes ACTIVE.
+  /** Polls until a table becomes active or retries are exhausted.
    *
    * @param tableName Table to poll.
-   * @return Resolves when the table status is ACTIVE.
+   * @return Resolves when the table is active.
    */
   private async waitUntilActive(tableName: string): Promise<void> {
     await withBoundedRetry(
@@ -213,16 +162,11 @@ export class DynamoService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Ensures TTL is enabled for a table with the desired attribute.
-   *
-   * - no-ops only when TTL is already ENABLED or ENABLING with the matching
-   *   attribute; a differently-named attribute would leave app writes
-   *   (`expiresAt`) unexpired, so it is corrected, not accepted
-   * - enables via UpdateTimeToLive otherwise, logging the reconciliation.
+   * Enables TTL with the requested attribute, correcting mismatches.
    *
    * @param tableName Table to reconcile.
-   * @param attributeName TTL attribute holding epoch seconds.
-   * @return Resolves when TTL is enabled with the desired attribute.
+   * @param attributeName Attribute containing expiration timestamps.
+   * @return Resolves when TTL is configured.
    */
   private async ensureTtl(
     tableName: string,

@@ -1,15 +1,6 @@
 /**
- * OpenTelemetry tracing bootstrap (traces-only).
- *
- * - Enabled by default, opt out with `OTEL_ENABLED=false`
- * - Starts `NodeSDK` with the OTLP/gRPC exporter plus HTTP + Express
- *   auto-instrumentation
- * - The SDK resolves `OTEL_TRACES_SAMPLER[_ARG]` natively; only the
- *   service-name default, the endpoint default, and the enabled gate live here
- * - Redacts the `key` query param (plus the SDK defaults) from incoming spans
- * - Exposes `isHealthRequest` and `buildHttpInstrumentation` for unit tests
- * - Never captures tokens, Authorization headers, message bodies, Redis keys,
- *   or Redis values.
+ * Starts traces-only OpenTelemetry with HTTP/Express instrumentation.
+ * Enabled by default; redacts sensitive query parameters and excludes health checks.
  */
 
 import { ExpressInstrumentation } from '@opentelemetry/instrumentation-express';
@@ -20,29 +11,15 @@ import { NodeSDK } from '@opentelemetry/sdk-node';
 import type { IncomingMessage } from 'node:http';
 import { parseEnvFlag } from './common/env';
 
-/**
- * Default OTLP/gRPC traces endpoint (in-compose Jaeger).
- *
- * - Must stay in sync with the `OTEL_EXPORTER_OTLP_ENDPOINT` default in
- *   `docker-compose.yml`, which documents the same contract
- * - `OTLPTraceExporter` (from `exporter-trace-otlp-grpc`) speaks OTLP/gRPC,
- *   which Jaeger serves on 4317; 4318 is OTLP/HTTP and needs the HTTP exporter
- * - the `http://` scheme selects the exporter's insecure credentials.
- */
+/** Default in-compose Jaeger OTLP/gRPC endpoint; keep in sync with compose. */
 export const DEFAULT_OTLP_ENDPOINT = 'http://jaeger:4317';
 
-/** Default service name shown in the Jaeger UI. */
+/** Default service name reported to Jaeger. */
 export const DEFAULT_SERVICE_NAME = 'nestJS-server';
 
 /**
- * Query parameter names redacted from incoming (server) span attributes.
- *
- * - `redactedQueryParamsServer` replaces the SDK default list instead of
- *   extending it, so the SDK defaults are repeated here verbatim
- * - `key` is added because `GET /redis?key=<name>` would otherwise export
- *   Redis key names to the collector
- * - pinned to the `@opentelemetry/instrumentation-http` 0.222.0 defaults;
- *   re-check this list when upgrading that package.
+ * Server query parameters to redact. Includes SDK defaults plus `key`;
+ * verify the defaults when upgrading HTTP instrumentation.
  */
 export const REDACTED_QUERY_PARAMS_SERVER: readonly string[] = [
   'sig',
@@ -55,25 +32,14 @@ export const REDACTED_QUERY_PARAMS_SERVER: readonly string[] = [
   'key',
 ];
 
-/** Health path excluded from auto-instrumentation to avoid scrape noise. */
+/** Health endpoint excluded from tracing. */
 export const HEALTH_PATH = '/health';
 
 let sdk: NodeSDK | undefined;
 let started = false;
 let shutdownHookRegistered = false;
 
-/**
- * Parses the `OTEL_ENABLED` toggle.
- *
- * - delegates to the canonical `parseEnvFlag` with default-on semantics:
- *   `undefined`/blank means enabled, `true`/`1`/`yes` mean enabled,
- *   `false`/`0`/`no` mean disabled
- * - anything else warns and stays enabled so a typo cannot silently kill
- *   tracing in one environment while it runs in another.
- *
- * @param value Raw env value.
- * @return False only for an explicit disable string.
- */
+/** Parses the default-on `OTEL_ENABLED` flag; unknown values warn and enable tracing. */
 export function parseEnabled(value: string | undefined): boolean {
   return parseEnvFlag(value, {
     defaultValue: true,
@@ -83,13 +49,10 @@ export function parseEnabled(value: string | undefined): boolean {
 }
 
 /**
- * Checks whether a request URL targets the health endpoint.
- *
- * - matches `/health` with optional query string, fragment, or trailing slash
- * - never throws on missing/odd input, returns false then.
+ * Checks whether a URL targets `/health`, with an optional trailing slash.
  *
  * @param url Request URL or path, if known.
- * @return True when the URL is a health check.
+ * @return Whether it targets the health endpoint.
  */
 export function isHealthRequest(url: string | undefined): boolean {
   if (url === undefined || url === '') {
@@ -104,12 +67,9 @@ export function isHealthRequest(url: string | undefined): boolean {
 }
 
 /**
- * Builds the HTTP auto-instrumentation with the service's redaction policy.
+ * Creates HTTP instrumentation with query redaction and health-check exclusion.
  *
- * - `key` is redacted so Redis key names never reach the collector
- * - health checks are excluded to avoid scrape noise.
- *
- * @return Configured HTTP instrumentation for `NodeSDK`.
+ * @return Configured HTTP instrumentation.
  */
 export function buildHttpInstrumentation(): HttpInstrumentation {
   return new HttpInstrumentation({
@@ -120,13 +80,9 @@ export function buildHttpInstrumentation(): HttpInstrumentation {
 }
 
 /**
- * Starts the OpenTelemetry SDK once.
+ * Starts tracing once unless disabled; logs startup failures and registers shutdown handlers.
  *
- * - no-op when `OTEL_ENABLED` disables tracing or when already started
- * - never throws: exporter/startup failures are logged and the app keeps serving
- * - registers a best-effort shutdown hook for `SIGTERM`/`SIGINT`.
- *
- * @return Nothing, the global tracer provider is registered as a side effect.
+ * @return Nothing; registers the global tracer provider.
  */
 export function initTracing(): void {
   if (started) {
@@ -164,12 +120,9 @@ export function initTracing(): void {
 }
 
 /**
- * Registers a best-effort SDK shutdown hook.
+ * Registers one-time `SIGTERM`/`SIGINT` handlers; logs shutdown failures.
  *
- * - runs once per process, shuts down the exporter on `SIGTERM`/`SIGINT`
- * - flush errors are logged, never rethrown.
- *
- * @return Nothing, signal handlers are attached as a side effect.
+ * @return Nothing; attaches signal handlers.
  */
 function registerShutdownHook(): void {
   if (shutdownHookRegistered) {
@@ -187,10 +140,7 @@ function registerShutdownHook(): void {
 }
 
 /**
- * Shuts down the SDK and flushes pending spans.
- *
- * - no-op when tracing never started
- * - resets state so tests can re-initialize.
+ * Flushes and shuts down tracing, resetting state for re-initialization.
  *
  * @return Resolves when shutdown completes.
  */
@@ -205,11 +155,9 @@ export async function shutdownTracing(): Promise<void> {
 }
 
 /**
- * Reports whether the SDK started in this process.
+ * Reports whether tracing started.
  *
- * - test hook to assert the enabled/disabled paths.
- *
- * @return True after a successful `initTracing`.
+ * @return True after successful initialization.
  */
 export function isTracingStarted(): boolean {
   return started;

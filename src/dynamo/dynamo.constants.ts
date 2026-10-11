@@ -1,17 +1,9 @@
-/**
- * DynamoDB DI token and env config.
- *
- * - DYNAMO_CLIENT: injection token
- * - getDynamoConfig: reads DYNAMODB_ENDPOINT/AWS_* env, parses the URL once
- * - getDynamoBootstrapConfig: local-only gate plus DYNAMODB_BOOTSTRAP override
- */
+/** DynamoDB injection token and environment configuration. */
 import { parseEnvFlag } from '../common/env';
 
 export const DYNAMO_CLIENT = 'DYNAMO_CLIENT';
 
-/**
- * Resolved DynamoDB connection settings.
- */
+/** Resolved DynamoDB connection settings. */
 export interface DynamoConfig {
   endpoint: string;
   hostname: string;
@@ -25,13 +17,10 @@ const DEFAULT_AWS_REGION = 'us-east-1';
 const DEFAULT_DUMMY_CREDENTIAL = 'local';
 
 /**
- * Resolves a credential env value with the dummy local fallback.
- *
- * - blank and missing values fall back so local boots need no AWS keys
- * - non-blank values pass through untouched.
+ * Uses dummy credentials when the environment value is empty.
  *
  * @param value Raw env value.
- * @return The credential or the local default.
+ * @return The credential or local default.
  */
 function orLocalCredential(value: string | undefined): string {
   if (value === undefined || value === '') {
@@ -41,12 +30,7 @@ function orLocalCredential(value: string | undefined): string {
 }
 
 /**
- * Reads DynamoDB config from the environment with local defaults.
- *
- * - endpoint defaults to the local DynamoDB container port
- * - region defaults to us-east-1, credentials default to dummy locals
- * - exposes the parsed hostname so the bootstrap gate never re-parses the URL
- * - throws when the endpoint is not a valid URL or region is blank.
+ * Resolves DynamoDB settings from the environment and local defaults.
  *
  * @return The resolved DynamoDB config.
  */
@@ -77,9 +61,7 @@ export function getDynamoConfig(): DynamoConfig {
   };
 }
 
-/**
- * Hostnames treated as ephemeral local DynamoDB targets.
- */
+/** Hostnames recognized as local DynamoDB targets. */
 export const LOCAL_DYNAMO_HOSTNAMES: readonly string[] = [
   'localhost',
   '127.0.0.1',
@@ -88,23 +70,17 @@ export const LOCAL_DYNAMO_HOSTNAMES: readonly string[] = [
   'host.docker.internal',
 ];
 
-/**
- * Resolved bootstrap gate for ensure-exists table creation.
- */
+/** Resolved table-bootstrap decision. */
 export interface DynamoBootstrapConfig {
   hostname: string;
   shouldBootstrap: boolean;
 }
 
 /**
- * Checks whether a hostname is an allowed local DynamoDB target.
- *
- * - compares case-insensitively against the local allowlist
- * - strips IPv6 brackets because `URL.hostname` returns `[::1]` bracketed
- * - unknown or empty hostnames never count as local.
+ * Checks a hostname against the local DynamoDB allowlist.
  *
  * @param hostname URL hostname from the configured endpoint.
- * @return True when the hostname is a known local target.
+ * @return Whether the hostname is local.
  */
 export function isLocalDynamoHostname(hostname: string): boolean {
   let normalized = hostname.trim().toLowerCase();
@@ -115,12 +91,7 @@ export function isLocalDynamoHostname(hostname: string): boolean {
 }
 
 /**
- * Resolves whether startup table bootstrap should run.
- *
- * - bootstraps when the endpoint hostname is local
- * - DYNAMODB_BOOTSTRAP forces bootstrap for non-local endpoints via the
- *   canonical `parseEnvFlag` truthy set (`true`/`1`/`yes`)
- * - never throws for a missing flag; invalid endpoints still throw via getDynamoConfig.
+ * Enables bootstrap for local endpoints or via `DYNAMODB_BOOTSTRAP`.
  *
  * @return The endpoint hostname and the effective decision.
  */

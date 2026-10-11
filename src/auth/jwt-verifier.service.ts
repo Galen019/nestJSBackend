@@ -1,20 +1,9 @@
-/**
- * RS256 JWT verification service.
- *
- * - Verifies signature plus issuer, audience, and expiration
- * - Test flow: tests sign with the private key, this service verifies
- * - Throws on any problem so callers map failures to 401/1008/UNAUTHENTICATED.
- */
+/** Verifies RS256 JWT signatures and required claims. */
 import { Injectable } from '@nestjs/common';
 import { verify } from 'jsonwebtoken';
 import { getJwtConfig } from './auth.constants';
 
-/**
- * Minimal verified JWT payload.
- *
- * - `iss`/`aud`/`exp` are always present after verification
- * - `sub` is optional and used to bind WS `userId` when present.
- */
+/** Required verified claims, with optional issued-at and subject. */
 export interface JwtPayload {
   iss: string;
   aud: string | string[];
@@ -24,12 +13,10 @@ export interface JwtPayload {
 }
 
 /**
- * Checks that a decoded value has the required JWT claims.
- *
- * - narrows `unknown` without casts, rejects strings and partial objects.
+ * Checks that a decoded value has valid issuer, audience, and expiry claims.
  *
  * @param value Decoded token payload from `jsonwebtoken`.
- * @return True when the value carries iss, aud, and exp.
+ * @return Whether the payload has the required claims.
  */
 function isJwtPayload(value: unknown): value is JwtPayload {
   if (typeof value !== 'object' || value === null) {
@@ -72,22 +59,14 @@ export function extractBearerToken(
   return token === '' ? undefined : token;
 }
 
-/**
- * Verifies RS256 JWTs against the configured public key.
- *
- * - Reads config lazily so tests can set env per suite before verifying
- * - Enforces `RS256` only, rejecting alg-confusion tokens (e.g. HS256).
- */
+/** Verifies RS256 JWTs using the configured public key. */
 @Injectable()
 export class JwtVerifierService {
   /**
-   * Verifies a JWT and returns its payload.
-   *
-   * - enforces signature, expiration, issuer, and audience
-   * - throws when the token is malformed, expired, or has wrong claims.
+   * Verifies a JWT's signature and claims.
    *
    * @param token Compact JWT to verify.
-   * @return The verified payload.
+   * @return Verified payload.
    */
   verify(token: string): JwtPayload {
     const config = getJwtConfig();
@@ -103,13 +82,10 @@ export class JwtVerifierService {
   }
 
   /**
-   * Extracts and verifies the token from an `Authorization` header.
-   *
-   * - combines scheme parsing with signature/claims verification
-   * - throws when the header is missing, non-Bearer, or invalid.
+   * Extracts and verifies a JWT from an authorization header.
    *
    * @param header Raw `Authorization` header value.
-   * @return The verified payload.
+   * @return Verified payload.
    */
   verifyHeader(header: string | undefined): JwtPayload {
     const token = extractBearerToken(header);
