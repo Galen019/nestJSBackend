@@ -1,8 +1,6 @@
 # Prometheus scrape config for the compose lab.
 #
 # - app: request counts and latencies from the NestJS scrape server on :9464
-# - jaeger: internal OTel-collector telemetry on :8888 (collector health,
-#   not API counts)
 global:
   scrape_interval: 15s
   scrape_timeout: 10s
@@ -12,7 +10,3 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: ['app:9464']
-  - job_name: 'jaeger'
-    metrics_path: /metrics
-    static_configs:
-      - targets: ['jaeger:8888']

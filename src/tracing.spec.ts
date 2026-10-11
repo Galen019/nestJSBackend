@@ -76,15 +76,19 @@ describe('tracing query redaction', () => {
 });
 
 describe('tracing health exclusion', () => {
-  it('matches /health with query, fragment, or trailing slash', () => {
-    expect(isHealthRequest('/health')).toBe(true);
-    expect(isHealthRequest('/health?full=1')).toBe(true);
-    expect(isHealthRequest('/health/')).toBe(true);
-    expect(isHealthRequest('/health/#frag')).toBe(true);
+  it('matches only the live and ready probes', () => {
+    expect(isHealthRequest('/health/live')).toBe(true);
+    expect(isHealthRequest('/health/live/')).toBe(true);
+    expect(isHealthRequest('/health/live?full=1')).toBe(true);
+    expect(isHealthRequest('/health/ready')).toBe(true);
+    expect(isHealthRequest('/health/ready/')).toBe(true);
+    expect(isHealthRequest('/health/ready?full=1')).toBe(true);
   });
 
-  it('rejects other routes and odd input', () => {
-    expect(isHealthRequest('/')).toBe(false);
+  it('rejects bare health paths, other routes, and odd input', () => {
+    expect(isHealthRequest('/health')).toBe(false);
+    expect(isHealthRequest('/health/')).toBe(false);
+    expect(isHealthRequest('/health/details')).toBe(false);
     expect(isHealthRequest('/redis?key=a')).toBe(false);
     expect(isHealthRequest('/healthz')).toBe(false);
     expect(isHealthRequest('/api/health')).toBe(false);

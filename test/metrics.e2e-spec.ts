@@ -82,10 +82,12 @@ describe('Metrics (e2e)', () => {
   });
 
   it('excludes health probes from the registry', async () => {
-    await request(app.getHttpServer()).get('/health').expect(200);
+    await request(app.getHttpServer()).get('/health/live').expect(200);
+    await request(app.getHttpServer()).get('/health/ready').expect(200);
 
     const body = await metricsBody();
-    expect(body).not.toContain('route="/health"');
+    expect(body).not.toContain('route="/health/live"');
+    expect(body).not.toContain('route="/health/ready"');
   });
 
   it('labels unmatched paths as unknown', async () => {

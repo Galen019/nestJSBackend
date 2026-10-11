@@ -49,7 +49,7 @@ jobs:
       - name: Wait for app health
         run: |
           for _ in $(seq 1 30); do
-            curl --fail "http://localhost:${PORT:-3000}/health" && exit 0
+            curl --fail "http://localhost:${PORT:-3000}/health/ready" && exit 0
             sleep 2
           done
           echo "App did not become healthy in time"

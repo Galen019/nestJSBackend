@@ -3,8 +3,8 @@
  *
  * - registers WsAdapter so the `/ws` gateway boots alongside HTTP routes
  * - JWT: test code signs RS256 tokens, API verifies iss/aud/exp via global guard
- * - GET /health stays @Public(); GET / and /redis require a valid Bearer token
- * - GET /health: ok/up with both deps, 503 degraded when DynamoDB is down
+ * - GET /health/live and GET /health/ready stay @Public(); GET / and /redis require a valid Bearer token
+ * - GET /health/live: always ok; GET /health/ready: ok/up with both deps, 503 degraded when DynamoDB is down
  * - GET /redis?key: hit 200 with value and TTL, persistent null, miss 404, missing or blank key 400
  * - POST /redis: 201 without options with edge default TTL, 201 with options
  * - POST /redis: 400 on invalid options, legacy shape, extra fields, missing or blank key
@@ -60,17 +60,24 @@ describe('AppController (e2e)', () => {
     return request(app.getHttpServer()).get('/').expect(401);
   });
 
-  it('/health (GET) stays public without a token', () => {
+  it('/health/live (GET) stays public without a token', () => {
     return request(app.getHttpServer())
-      .get('/health')
+      .get('/health/live')
+      .expect(200)
+      .expect({ status: 'ok' });
+  });
+
+  it('/health/ready (GET) stays public without a token', () => {
+    return request(app.getHttpServer())
+      .get('/health/ready')
       .expect(200)
       .expect({ status: 'ok', redis: 'up', dynamo: 'up' });
   });
 
-  it('/health (GET) returns 503 when DynamoDB is down', async () => {
+  it('/health/ready (GET) returns 503 when DynamoDB is down', async () => {
     dynamoFake.ping.mockRejectedValueOnce(new Error('Unreachable'));
     await request(app.getHttpServer())
-      .get('/health')
+      .get('/health/ready')
       .expect(503)
       .expect({ status: 'degraded', redis: 'up', dynamo: 'down' });
   });

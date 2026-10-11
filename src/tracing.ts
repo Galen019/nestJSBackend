@@ -10,6 +10,7 @@ import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import type { IncomingMessage } from 'node:http';
 import { parseEnvFlag } from './common/env';
+import { isHealthRequest } from './health/health.constants';
 
 /** Default in-compose Jaeger OTLP/gRPC endpoint; keep in sync with compose. */
 export const DEFAULT_OTLP_ENDPOINT = 'http://jaeger:4317';
@@ -32,8 +33,7 @@ export const REDACTED_QUERY_PARAMS_SERVER: readonly string[] = [
   'key',
 ];
 
-/** Health endpoint excluded from tracing. */
-export const HEALTH_PATH = '/health';
+export { isHealthRequest };
 
 let sdk: NodeSDK | undefined;
 let started = false;
@@ -46,24 +46,6 @@ export function parseEnabled(value: string | undefined): boolean {
     warnOnUnknown: true,
     label: 'OTEL_ENABLED',
   });
-}
-
-/**
- * Checks whether a URL targets `/health`, with an optional trailing slash.
- *
- * @param url Request URL or path, if known.
- * @return Whether it targets the health endpoint.
- */
-export function isHealthRequest(url: string | undefined): boolean {
-  if (url === undefined || url === '') {
-    return false;
-  }
-  try {
-    const path = new URL(url, 'http://localhost').pathname;
-    return path === HEALTH_PATH || path === `${HEALTH_PATH}/`;
-  } catch {
-    return false;
-  }
 }
 
 /**
