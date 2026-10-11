@@ -21,8 +21,10 @@ RUN npm ci --omit=dev && chown -R node:node /app
 
 COPY --from=build --chown=node:node /app/dist ./dist
 
-# Informational only: runtime port is $PORT (default 3000, see src/main.ts); compose maps ${PORT:-3000}:${PORT:-3000}.
-EXPOSE 3000
+# Informational only: runtime ports are $PORT (default 3000, see src/main.ts)
+# and 9464 (fixed Prometheus scrape server); compose maps
+# ${PORT:-3000}:${PORT:-3000} and 9464:9464.
+EXPOSE 3000 9464
 
 USER node
 
