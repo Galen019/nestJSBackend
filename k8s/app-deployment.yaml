@@ -65,4 +65,4 @@ spec:
             items:
               - key: jwt-public.pem
                 path: jwt-public.pem
-            defaultMode: 0400
+            defaultMode: 0444
