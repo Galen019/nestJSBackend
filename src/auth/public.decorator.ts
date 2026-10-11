@@ -12,7 +12,7 @@ export const IS_PUBLIC_KEY = 'isPublic';
 /**
  * Marks a route or controller as public (no JWT required).
  *
- * - intended for readiness probes such as `GET /health`.
+ * - intended for probes such as `GET /health/live` and `GET /health/ready`.
  *
  * @return The metadata decorator.
  */

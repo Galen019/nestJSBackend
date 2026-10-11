@@ -2,8 +2,8 @@
  * Metrics DI module.
  *
  * - Provides the shared MetricsService registry for middleware and scraping
- * - Applies MetricsMiddleware to every route; probes are excluded here via
- *   the framework so the middleware never sees them.
+ * - Applies MetricsMiddleware to every route; the scrape path is excluded
+ *   here while health probes skip recording inside the middleware.
  */
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { METRICS_PATH } from './metrics.constants';
@@ -16,14 +16,14 @@ import { MetricsService } from './metrics.service';
 })
 export class MetricsModule implements NestModule {
   /**
-   * Registers the metrics middleware on all routes except probes.
+   * Registers the metrics middleware on all routes except the scrape path.
    *
    * @param consumer Nest middleware consumer for route binding.
    */
   configure(consumer: MiddlewareConsumer): void {
     consumer
       .apply(MetricsMiddleware)
-      .exclude('/health', '/health/', METRICS_PATH, `${METRICS_PATH}/`)
+      .exclude(METRICS_PATH, `${METRICS_PATH}/`)
       .forRoutes('*');
   }
 }

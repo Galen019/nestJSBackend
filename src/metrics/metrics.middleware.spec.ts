@@ -2,7 +2,7 @@
  * Unit suite for MetricsMiddleware label resolution and observation.
  *
  * - templates label known routes, unmatched requests fall back to unknown
- * - probe exclusion lives in MetricsModule.exclude, not here.
+ * - health probes skip recording via the shared matcher.
  */
 import { EventEmitter } from 'node:events';
 import { describe, it, expect, vi } from 'vitest';
@@ -20,6 +20,8 @@ import { MetricsService } from './metrics.service';
 function fakeRequest(path: string, routePath?: string): Request {
   return {
     path,
+    originalUrl: path,
+    url: path,
     method: 'GET',
     route: routePath === undefined ? undefined : { path: routePath },
   } as unknown as Request;
@@ -96,6 +98,43 @@ describe('MetricsMiddleware', () => {
     const res = fakeResponse(404);
 
     middleware.use(fakeRequest('/nope'), res, next);
+    res.emit('finish');
+
+    const body = await service.getMetrics();
+    expect(body).toContain(
+      'http_requests_total{method="GET",route="unknown",status_code="404"} 1',
+    );
+  });
+
+  it('skips live and ready probes without recording', async () => {
+    const service = new MetricsService();
+    const middleware = new MetricsMiddleware(service);
+
+    for (const path of [
+      '/health/live',
+      '/health/live/',
+      '/health/ready?full=1',
+    ]) {
+      const next = fakeNext();
+      const res = fakeResponse(200);
+      middleware.use(fakeRequest(path), res, next);
+      res.emit('finish');
+      expect(next).toHaveBeenCalledOnce();
+    }
+
+    const body = await service.getMetrics();
+    expect(body).not.toContain('route="/health/live"');
+    expect(body).not.toContain('route="/health/ready"');
+    expect(body).not.toContain('route="unknown"');
+  });
+
+  it('records bare health paths that are not probes', async () => {
+    const service = new MetricsService();
+    const middleware = new MetricsMiddleware(service);
+    const next = fakeNext();
+    const res = fakeResponse(404);
+
+    middleware.use(fakeRequest('/health'), res, next);
     res.emit('finish');
 
     const body = await service.getMetrics();

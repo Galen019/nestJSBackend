@@ -1,13 +1,19 @@
 /**
- * Readiness probe for Redis and DynamoDB dependencies.
+ * Liveness and readiness probes for Kubernetes.
  *
- * - GET /health stays `@Public()`; all other routes require a Bearer token
- * - probes both dependencies in parallel and reports per-dependency status.
+ * - LiveController has no dependencies so liveness never touches Redis or DynamoDB
+ * - ReadyController probes both dependencies in parallel and reports per-dependency status
+ * - Probe paths come from the shared health constants.
  */
 import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
 import { DynamoService } from '../dynamo/dynamo.service';
 import { RedisService } from '../redis/redis.service';
+import {
+  HEALTH_BASE_PATH,
+  LIVE_SUBPATH,
+  READY_SUBPATH,
+} from './health.constants';
 
 /**
  * Per-dependency readiness state.
@@ -22,21 +28,47 @@ export type HealthStatus = 'ok' | 'degraded';
 /**
  * Readiness response body for success and 503 payloads.
  */
-export interface HealthResponse {
+export interface ReadyResponse {
   status: HealthStatus;
   redis: DependencyStatus;
   dynamo: DependencyStatus;
 }
 
 /**
- * Readiness probe for Redis and DynamoDB dependencies.
- *
- * - GET /health: pings Redis and DynamoDB
- * - Success: `{ status: 'ok', redis: 'up', dynamo: 'up' }`
- * - Failure: throws 503 `{ status: 'degraded', redis, dynamo }`
+ * Liveness response body sharing the readiness ok status.
  */
-@Controller('health')
-export class HealthController {
+export interface LiveResponse {
+  status: 'ok';
+}
+
+/**
+ * Process liveness probe without dependencies.
+ *
+ * - GET /health/live answers when the process is alive.
+ */
+@Controller(HEALTH_BASE_PATH)
+export class LiveController {
+  /**
+   * Reports process liveness without touching dependencies.
+   *
+   * @return Ok status when the process answers.
+   */
+  @Get(LIVE_SUBPATH)
+  @Public()
+  live(): LiveResponse {
+    return { status: 'ok' };
+  }
+}
+
+/**
+ * Dependency readiness probe for Redis and DynamoDB.
+ *
+ * - GET /health/ready pings Redis and DynamoDB
+ * - Success: `{ status: 'ok', redis: 'up', dynamo: 'up' }`
+ * - Failure: throws 503 `{ status: 'degraded', redis, dynamo }`.
+ */
+@Controller(HEALTH_BASE_PATH)
+export class ReadyController {
   /**
    * Creates the controller with dependency services.
    *
@@ -57,9 +89,9 @@ export class HealthController {
    *
    * @return Ok status when both are up.
    */
-  @Get()
+  @Get(READY_SUBPATH)
   @Public()
-  async check(): Promise<HealthResponse> {
+  async ready(): Promise<ReadyResponse> {
     const [redisResult, dynamoResult] = await Promise.allSettled([
       this.redisService.ping(),
       this.dynamoService.ping(),

@@ -1,12 +1,13 @@
 /**
  * Records HTTP metrics before guards and observes them when responses finish.
- * Labels use route templates only; probe exclusions are configured in
- * MetricsModule. The unknown-path e2e test verifies unmatched requests pass
- * through this middleware.
+ * Health probes skip recording here via the shared matcher; the scrape path
+ * stays excluded in MetricsModule. The unknown-path e2e test verifies unmatched
+ * requests pass through this middleware.
  */
 import { Injectable, type NestMiddleware } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import type { IRoute } from 'express-serve-static-core';
+import { isHealthRequest } from '../health/health.constants';
 import { UNKNOWN_ROUTE } from './metrics.constants';
 import { MetricsService } from './metrics.service';
 
@@ -32,6 +33,16 @@ export function resolveRouteLabel(request: Request): string {
 }
 
 /**
+ * Resolves the request URL for probe matching.
+ *
+ * @param req Incoming Express request.
+ * @return The URL or path when known.
+ */
+function resolveRequestUrl(req: Request): string | undefined {
+  return req.originalUrl ?? req.url ?? req.path;
+}
+
+/**
  * Middleware recording every HTTP request into the metrics registry.
  *
  * - times the request and observes it when the response finishes.
@@ -49,6 +60,10 @@ export class MetricsMiddleware implements NestMiddleware {
    * @param next Passes control to guards, pipes, and handlers.
    */
   use(req: Request, res: Response, next: NextFunction): void {
+    if (isHealthRequest(resolveRequestUrl(req))) {
+      next();
+      return;
+    }
     const start = process.hrtime.bigint();
     const method = req.method;
     res.on('finish', () => {
