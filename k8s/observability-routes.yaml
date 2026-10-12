@@ -1,0 +1,32 @@
+
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: jaeger-route
+  namespace: backend-lab
+spec:
+  parentRefs:
+    - name: local-gateway
+      namespace: envoy-gateway-system
+  hostnames:
+    - jaeger.localhost
+  rules:
+    - backendRefs:
+        - name: jaeger
+          port: 16686
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: prometheus-route
+  namespace: backend-lab
+spec:
+  parentRefs:
+    - name: local-gateway
+      namespace: envoy-gateway-system
+  hostnames:
+    - prometheus.localhost
+  rules:
+    - backendRefs:
+        - name: prometheus
+          port: 9090
