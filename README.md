@@ -1,6 +1,6 @@
 # nestJSBackend
 
-NestJS 12 API with HTTP + WebSocket, backed by Redis and DynamoDB, observed via Jaeger and Prometheus.
+NestJS 12 API with HTTP + WebSocket, backed by Redis and DynamoDB, observed via Jaeger, Prometheus, and Grafana.
 
 ## Architecture
 
@@ -12,6 +12,7 @@ flowchart LR
     App -->|"DynamoDB client<br/>:8000"| Dynamo[(DynamoDB Local<br/>:8000)]
     App -->|"OTLP gRPC traces<br/>:4317"| Jaeger[Jaeger<br/>:4317 traces<br/>:16686 UI]
     Prometheus[Prometheus<br/>:9090] -->|"scrape<br/>app:9464 /metrics"| App
+    Grafana[Grafana<br/>:3001 UI] -->|"PromQL queries<br/>:9090"| Prometheus
 ```
 
 | Connection | From | To | Protocol | Notes |
@@ -21,5 +22,6 @@ flowchart LR
 | Storage | NestJS App | DynamoDB | HTTP :8000 local, `DYNAMODB_ENDPOINT` | DynamoDB Local in compose |
 | Traces | NestJS App | Jaeger | OTLP/gRPC to :4317 | `OTEL_EXPORTER_OTLP_ENDPOINT`, service `nestJS-server`, UI on :16686 |
 | Metrics | Prometheus | NestJS App | HTTP scrape `app:9464/metrics` | Standalone scrape server, `http_requests_total` + `http_request_duration_seconds` |
+| Dashboards | Grafana | Prometheus | PromQL HTTP :9090 | UI on :3001 (container :3000), provisioned Prometheus datasource + NestJS Overview dashboard |
 
 See `docker-compose.yml` for the local wiring and `AGENTS.md` for repo conventions.
