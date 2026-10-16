@@ -1,0 +1,17 @@
+# Grafana state (compose parity with the grafana-data named volume).
+# The deployment mounts this claim at /var/lib/grafana for the sqlite DB,
+# sessions, and plugins. Size is lab-scale; grow it if plugin or retention
+# needs change.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

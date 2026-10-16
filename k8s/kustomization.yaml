@@ -1,0 +1,24 @@
+# Kustomize entrypoint for the lab cluster.
+# ArgoCD `path` points here (k8s/); the build output is only the listed
+# resources. k8s/argocd/application.yaml is the management-layer Application
+# and is intentionally not listed, an Application must not manage itself.
+# The observability stack (Jaeger, Prometheus, Grafana) lives behind
+# observability/kustomization.yaml; extend that file, not this list.
+# Apply manually with: kubectl apply -k k8s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secrets.yaml
+  - app-deployment.yaml
+  - app-service.yaml
+  - app-route.yaml
+  - redis-deployment.yaml
+  - redis-service.yaml
+  - dynamodb-deployment.yaml
+  - dynamodb-service.yaml
+  - observability/
+  - argocd-route.yaml
+  - envoy/gateway.yaml
+  - envoy/envoy-proxy.yaml
