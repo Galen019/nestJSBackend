@@ -1,4 +1,4 @@
-# Grafana datasource provisioning for the compose lab.
+# Prometheus datasource for Grafana.
 apiVersion: 1
 datasources:
   - name: Prometheus

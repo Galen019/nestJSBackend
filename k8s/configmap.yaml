@@ -1,7 +1,5 @@
-# Explicit lab config (mirrors docker-compose.yml app.environment).
-# No Compose ${...:-default} interpolation here — Kubernetes does not expand
-# that syntax, so every value is a literal. Dummy AWS keys stay here
-# (compose parity; real keys would move to a Secret for prod).
+# Literal lab config; Kubernetes does not expand Compose defaults.
+# AWS keys are placeholders; use a Secret in production.
 apiVersion: v1
 kind: ConfigMap
 metadata:

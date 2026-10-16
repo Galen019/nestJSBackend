@@ -1,7 +1,6 @@
-# Runs the NestJS app (mirrors compose `app` service build: .).
-# Build/load for kind:
+# Build and load the app image for kind:
 #   docker build -t productionbackend:local .
-#   kind load docker-image productionbackend:local   # skip on Docker Desktop
+#   kind load docker-image productionbackend:local   # Docker Desktop: skip
 apiVersion: apps/v1
 kind: Deployment
 metadata:

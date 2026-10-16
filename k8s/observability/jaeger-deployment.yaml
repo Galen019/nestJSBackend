@@ -1,10 +1,6 @@
-# Runs Jaeger (mirrors compose `jaeger: jaegertracing/jaeger:2.20.0`).
-# Exposes:
-#   - OTLP/gRPC 4317 (used by the app's gRPC exporter)
-#   - UI 16686
-#   - Health endpoint 13133
-# OTLP/HTTP 4318 is intentionally omitted (needs the HTTP exporter instead).
-# kubectl -n backend-lab port-forward svc/jaeger 16686:16686
+# Jaeger OTLP/gRPC: 4317; UI: 16686; health: 13133.
+# OTLP/HTTP 4318 is not configured.
+# UI: kubectl -n backend-lab port-forward svc/jaeger 16686:16686
 apiVersion: apps/v1
 kind: Deployment
 metadata:

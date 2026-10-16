@@ -1,6 +1,4 @@
-# Observability stack: Jaeger, Prometheus, Grafana, and their gateway routes.
-# Referenced once from the root k8s/kustomization.yaml; add new observability
-# manifests here, not to the root inventory.
+# Observability manifests.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -14,12 +12,7 @@ resources:
   - grafana-service.yaml
   - grafana-secrets.yaml
 
-# Generated from the canonical shared sources under observability/config.
-# That directory is the single source of truth; compose bind-mounts the same
-# files and kustomize reads them at build time, so the cluster can never
-# drift from what compose runs. Content hashes suffix the ConfigMap names and
-# rewrite the Deployment references, so config edits roll the pods with no
-# manual restart.
+# Shared config; hashes roll pods on edits.
 generatorOptions:
   labels:
     app.kubernetes.io/part-of: productionBackend

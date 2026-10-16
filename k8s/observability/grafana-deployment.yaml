@@ -1,13 +1,7 @@
-# Runs Grafana (mirrors compose `grafana: grafana/grafana:11.6.2`).
-# Exposes:
-#   - Web UI 3000
-#   - Health endpoint /api/health
-# Persistent storage via the grafana PVC (compose parity with grafana-data).
-# Provisioning and dashboards come from generated ConfigMaps (see
-# configMapGenerator in observability/kustomization.yaml), each mounted as a directory
-# (no subPath fan-out). Content hashes rename the ConfigMaps on change and
-# roll the Deployment, so no manual restart is needed.
-# kubectl -n backend-lab port-forward svc/grafana 3000:3000
+# Grafana UI and health endpoint: 3000, /api/health.
+# State uses the grafana PVC; provisioning and dashboards use generated ConfigMaps.
+# ConfigMap hashes roll pods on config changes.
+# UI: kubectl -n backend-lab port-forward svc/grafana 3000:3000
 apiVersion: apps/v1
 kind: Deployment
 metadata:

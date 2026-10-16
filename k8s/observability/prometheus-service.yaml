@@ -1,4 +1,4 @@
-# Gives Prometheus its `prometheus:9090` DNS name + lab UI on 9090.
+# Prometheus DNS and UI: prometheus:9090.
 apiVersion: v1
 kind: Service
 metadata:

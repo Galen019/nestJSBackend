@@ -1,7 +1,5 @@
-# Grafana state (compose parity with the grafana-data named volume).
-# The deployment mounts this claim at /var/lib/grafana for the sqlite DB,
-# sessions, and plugins. Size is lab-scale; grow it if plugin or retention
-# needs change.
+# Grafana state, mounted at /var/lib/grafana.
+# Increase 1Gi if plugins or retention need more space.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

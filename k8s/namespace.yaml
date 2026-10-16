@@ -1,4 +1,4 @@
-# Isolate the lab mirror (mirrors docker-compose.yml service set).
+# Isolate lab resources.
 # Apply first: kubectl apply -f k8s/namespace.yaml
 apiVersion: v1
 kind: Namespace

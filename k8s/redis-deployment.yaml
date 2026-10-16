@@ -1,7 +1,6 @@
-# Runs Redis (mirrors compose `redis: redis:7-alpine`).
-# Ephemeral, no PVC (compose parity). Password comes from app-secrets.
-# Kubernetes expands $(REDIS_PASSWORD) using the container's environment.
-# Probes authenticate with redis-cli and run PING
+# Redis lab deployment; data is ephemeral.
+# Password comes from app-secrets and is expanded in commands.
+# Probes authenticate and run PING.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

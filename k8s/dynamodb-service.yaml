@@ -1,4 +1,4 @@
-# Gives DynamoDB its `dynamodb:8000` DNS name (matches DYNAMODB_ENDPOINT).
+# DynamoDB DNS: dynamodb:8000.
 apiVersion: v1
 kind: Service
 metadata:

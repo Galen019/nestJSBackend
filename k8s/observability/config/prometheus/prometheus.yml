@@ -1,6 +1,6 @@
-# Prometheus scrape config for the compose lab.
+# Lab scrape targets.
 #
-# - app: request counts and latencies from the NestJS scrape server on :9464
+# - app: NestJS metrics on :9464
 global:
   scrape_interval: 15s
   scrape_timeout: 10s
