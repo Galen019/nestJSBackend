@@ -25,3 +25,5 @@ flowchart LR
 | Dashboards | Grafana | Prometheus | PromQL HTTP :9090 | UI on :3001 (container :3000), provisioned Prometheus datasource + NestJS Overview dashboard |
 
 See `docker-compose.yml` for the local wiring and `AGENTS.md` for repo conventions.
+
+99% generated from opencode + muse spark 1.3
