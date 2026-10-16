@@ -15,6 +15,24 @@ spec:
     server: https://kubernetes.default.svc
     namespace: backend-lab
 
+  # Lab secrets carry placeholder values in git. Their live data is managed
+  # out of band (manual kubectl edit for the lab). Ignore data drift so a
+  # manual rotation is not reverted by automated sync/selfHeal. For prod use
+  # external-secrets or sealed-secrets instead of committing values.
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: app-secrets
+      namespace: backend-lab
+      jsonPointers:
+        - /data
+    - group: ""
+      kind: Secret
+      name: grafana-secrets
+      namespace: backend-lab
+      jsonPointers:
+        - /data
+
   syncPolicy:
     automated:
       prune: true

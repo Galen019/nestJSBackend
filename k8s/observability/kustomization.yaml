@@ -1,0 +1,42 @@
+# Observability stack: Jaeger, Prometheus, Grafana, and their gateway routes.
+# Referenced once from the root k8s/kustomization.yaml; add new observability
+# manifests here, not to the root inventory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - jaeger-deployment.yaml
+  - jaeger-service.yaml
+  - observability-routes.yaml
+  - prometheus-deployment.yaml
+  - prometheus-service.yaml
+  - grafana-pvc.yaml
+  - grafana-deployment.yaml
+  - grafana-service.yaml
+  - grafana-secrets.yaml
+
+# Generated from the canonical shared sources under observability/config.
+# That directory is the single source of truth; compose bind-mounts the same
+# files and kustomize reads them at build time, so the cluster can never
+# drift from what compose runs. Content hashes suffix the ConfigMap names and
+# rewrite the Deployment references, so config edits roll the pods with no
+# manual restart.
+generatorOptions:
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+configMapGenerator:
+  - name: prometheus-config
+    namespace: backend-lab
+    files:
+      - prometheus.yml=config/prometheus/prometheus.yml
+  - name: grafana-datasources
+    namespace: backend-lab
+    files:
+      - prometheus.yml=config/grafana/provisioning/datasources/prometheus.yml
+  - name: grafana-dashboard-provisioning
+    namespace: backend-lab
+    files:
+      - dashboards.yaml=config/grafana/provisioning/dashboards/dashboards.yaml
+  - name: grafana-dashboards
+    namespace: backend-lab
+    files:
+      - backend.json=config/grafana/dashboards/backend.json

@@ -1,0 +1,86 @@
+# Runs Grafana (mirrors compose `grafana: grafana/grafana:11.6.2`).
+# Exposes:
+#   - Web UI 3000
+#   - Health endpoint /api/health
+# Persistent storage via the grafana PVC (compose parity with grafana-data).
+# Provisioning and dashboards come from generated ConfigMaps (see
+# configMapGenerator in observability/kustomization.yaml), each mounted as a directory
+# (no subPath fan-out). Content hashes rename the ConfigMaps on change and
+# roll the Deployment, so no manual restart is needed.
+# kubectl -n backend-lab port-forward svc/grafana 3000:3000
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.6.2
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secrets
+                  key: admin-user
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secrets
+                  key: admin-password
+          volumeMounts:
+            - name: storage
+              mountPath: /var/lib/grafana
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+              readOnly: true
+            - name: dashboard-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards
+              readOnly: true
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+            defaultMode: 0444
+        - name: dashboard-provisioning
+          configMap:
+            name: grafana-dashboard-provisioning
+            defaultMode: 0444
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+            defaultMode: 0444
+        - name: storage
+          persistentVolumeClaim:
+            claimName: grafana
