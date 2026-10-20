@@ -4,6 +4,8 @@
  * - boots via the shared helper (global pipe, WsAdapter, faked providers)
  * - asserts the middleware records template labels for 200s and guard 401s
  * - asserts health probes add no series and key values never leak into labels
+ * - asserts default runtime metrics are exposed alongside HTTP series
+ * - asserts response size is recorded with exact labels
  * - asserts unknown paths label as unknown and /metrics 404s on the API port.
  */
 import { INestApplication } from '@nestjs/common';
@@ -96,6 +98,33 @@ describe('Metrics (e2e)', () => {
     const body = await metricsBody();
     expect(body).toContain(
       'http_requests_total{method="GET",route="unknown",status_code="404"} 1',
+    );
+  });
+
+  it('exposes default runtime metrics alongside HTTP series', async () => {
+    const body = await metricsBody();
+    expect(body).toContain('nodejs_version_info');
+    expect(body).toContain('process_cpu_seconds_total');
+  });
+
+  it('records the response size with exact labels', async () => {
+    vi.mocked(redisFake.getEntry).mockResolvedValueOnce({
+      value: 'bar',
+      expiresIn: 42,
+    });
+
+    await request(app.getHttpServer())
+      .get('/redis')
+      .set('Authorization', authHeader())
+      .query({ key: 'metrics-e2e-size' })
+      .expect(200);
+
+    const body = await metricsBody();
+    expect(body).toContain(
+      'http_response_size_bytes_count{method="GET",route="/redis",status_code="200"} 1',
+    );
+    expect(body).toMatch(
+      /http_response_size_bytes_sum\{method="GET",route="\/redis",status_code="200"\} [1-9]\d*/,
     );
   });
 
