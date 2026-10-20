@@ -32,4 +32,5 @@ configMapGenerator:
   - name: grafana-dashboards
     namespace: backend-lab
     files:
-      - backend.json=config/grafana/dashboards/backend.json
+      # Grafana.com dashboard 12230 (Node.js Dashboard), revision 4.
+      - nodejs.json=config/grafana/dashboards/nodejs.json

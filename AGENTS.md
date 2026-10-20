@@ -9,7 +9,7 @@ NestJS 12 + TypeScript + Node 22 (Express). HTTP + WS gateway + Redis + DynamoDB
 - `src/auth/` applies a global RS256 JWT guard to HTTP routes. The verifier checks signature, issuer, audience, and expiry, then sets `request.user`; configuration is read lazily and missing values never disable auth.
 - `src/ws/` keeps sessions in a single-instance in-memory registry. Gateway identity requires `userId`, `clientId`, and a token whose `sub` matches `userId`; invalid connections and duplicate new client IDs close with 1008. Session trackers receive events through the registry's shared fan-out path.
 - `src/user-topics/` subscribes to `user:{userId}` while that user has local sessions, using a dedicated Redis subscriber.
-- `src/metrics/` records HTTP request counts and durations in a dedicated Prometheus registry. Labels use route templates (never raw paths); `/health/live`, `/health/ready`, and `/metrics` are excluded. A separate server exposes `/metrics` on port 9464; `METRICS_ENABLED` controls that server, not recording.
+- `src/metrics/` records HTTP request counts, durations, sizes, and in-flight requests, plus prom-client default `nodejs_*` / `process_*` metrics, in a dedicated Prometheus registry. Labels use route templates (never raw paths); `/health/live`, `/health/ready`, and `/metrics` are excluded. A separate server exposes `/metrics` on port 9464; `METRICS_ENABLED` controls that server, not recording.
 - `scripts/test-ws.ts` and `scripts/test-redis.ts` are manual probes that sign test JWTs; `--no-auth` verifies rejection.
 - E2E tests mirror `main.ts`, use shared auth/test fakes and the committed test-only keypair. Reuse helpers in `test/`; never hand-roll tokens or duplicate fakes.
 

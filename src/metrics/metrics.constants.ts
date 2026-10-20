@@ -19,6 +19,15 @@ export const HTTP_REQUESTS_TOTAL = 'http_requests_total';
 /** Histogram for HTTP request durations by method, route, and status. */
 export const HTTP_REQUEST_DURATION_SECONDS = 'http_request_duration_seconds';
 
+/** Summary of request body sizes in bytes by method, route, and status. */
+export const HTTP_REQUEST_SIZE_BYTES = 'http_request_size_bytes';
+
+/** Summary of response body sizes in bytes by method, route, and status. */
+export const HTTP_RESPONSE_SIZE_BYTES = 'http_response_size_bytes';
+
+/** Gauge of application requests currently being handled, excluding probes. */
+export const HTTP_IN_FLIGHT_REQUESTS = 'http_in_flight_requests';
+
 /** Route label for requests that matched no Express route (e.g. 404s). */
 export const UNKNOWN_ROUTE = 'unknown';
 
