@@ -1,5 +1,4 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["@plannotator/opencode@latest"],
-  "lsp": true
+  "plugins": ["@plannotator/opencode@latest"]
 }
