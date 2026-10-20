@@ -21,8 +21,8 @@ flowchart LR
 | Cache + pub/sub | NestJS App | Redis | Redis :6379 | Shared client, `user:{userId}` fan out, `POST /redis` default TTL 3600s |
 | Storage | NestJS App | DynamoDB | HTTP :8000 local, `DYNAMODB_ENDPOINT` | DynamoDB Local in compose |
 | Traces | NestJS App | Jaeger | OTLP/gRPC to :4317 | `OTEL_EXPORTER_OTLP_ENDPOINT`, service `nestJS-server`, UI on :16686 |
-| Metrics | Prometheus | NestJS App | HTTP scrape `app:9464/metrics` | Standalone scrape server, `http_requests_total` + `http_request_duration_seconds` |
-| Dashboards | Grafana | Prometheus | PromQL HTTP :9090 | UI on :3001 (container :3000), provisioned Prometheus datasource + NestJS Overview dashboard |
+| Metrics | Prometheus | NestJS App | HTTP scrape `app:9464/metrics` | Standalone scrape server: HTTP `http_requests_total`, `http_request_duration_seconds`, `http_request_size_bytes`, `http_response_size_bytes`, and `http_in_flight_requests`, plus prom-client default `nodejs_*` / `process_*` runtime metrics |
+| Dashboards | Grafana | Prometheus | PromQL HTTP :9090 | UI on :3001 (container :3000), provisioned Prometheus datasource + Node.js dashboard |
 
 See `docker-compose.yml` for the local wiring and `AGENTS.md` for repo conventions.
 

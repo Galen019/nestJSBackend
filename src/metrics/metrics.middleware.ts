@@ -43,9 +43,28 @@ function resolveRequestUrl(req: Request): string | undefined {
 }
 
 /**
+ * Parses a Content-Length header into a non-negative byte count.
+ *
+ * @param value Raw header value from the request or response.
+ * @return The byte count, or 0 when absent or unparseable.
+ */
+function parseByteLength(value: unknown): number {
+  const raw: unknown = Array.isArray(value) ? value[0] : value;
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw > 0 ? raw : 0;
+  }
+  if (typeof raw !== 'string') {
+    return 0;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+/**
  * Middleware recording every HTTP request into the metrics registry.
  *
- * - times the request and observes it when the response finishes.
+ * - times the request and observes duration and sizes on response finish
+ * - tracks in-flight requests, releasing the gauge on finish or close.
  */
 @Injectable()
 export class MetricsMiddleware implements NestMiddleware {
@@ -66,15 +85,24 @@ export class MetricsMiddleware implements NestMiddleware {
     }
     const start = process.hrtime.bigint();
     const method = req.method;
-    res.on('finish', () => {
-      const durationSeconds = Number(process.hrtime.bigint() - start) / 1e9;
-      this.metrics.observeHttp({
-        method,
-        route: resolveRouteLabel(req),
-        statusCode: res.statusCode,
-        durationSeconds,
-      });
+    const requestBytes = parseByteLength(req.headers['content-length']);
+    const release = this.metrics.trackInFlight();
+    res.once('finish', () => {
+      try {
+        const durationSeconds = Number(process.hrtime.bigint() - start) / 1e9;
+        this.metrics.observeHttp({
+          method,
+          route: resolveRouteLabel(req),
+          statusCode: res.statusCode,
+          durationSeconds,
+          requestBytes,
+          responseBytes: parseByteLength(res.getHeader('content-length')),
+        });
+      } finally {
+        release();
+      }
     });
+    res.once('close', release);
     next();
   }
 }
