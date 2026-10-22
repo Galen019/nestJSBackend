@@ -1,18 +1,16 @@
 /**
- * JWT env config for RS256 verification.
+ * JWT verification config for RS256.
  *
- * - Single source of truth for issuer, audience, and the public key
- * - Test flow: test code signs with the private key, the API verifies here
- * - Fail-closed: throws when any value is missing or malformed.
+ * Single source of truth for issuer, audience, and public key.
+ * Test code signs with the private key; the API verifies it here.
+ * Fail closed on missing or malformed values.
+ * The public key is cached per resolved path.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * Verified JWT configuration.
- *
- * - publicKey is the PEM used to verify RS256 signatures
- * - issuer and audience are enforced on every token.
+ * Validated JWT config.
  */
 export interface JwtConfig {
   publicKey: string;
@@ -21,12 +19,15 @@ export interface JwtConfig {
 }
 
 /**
- * Reads the JWT public key from env.
+ * PEM cache keyed by resolved path.
+ */
+const publicKeyCache = new Map<string, string>();
+
+/**
+ * Read the JWT public key from env.
  *
- * - reads the PEM file at JWT_PUBLIC_KEY_PATH (file mount, Docker-friendly)
- * - relative paths resolve against the server working directory,
- *   so prefer an absolute path when the launch directory may vary
- * - throws when unset, blank, or unreadable.
+ * Relative paths resolve from the working directory; prefer absolute paths
+ * when the launch directory can vary. Cached per resolved path.
  *
  * @return The PEM-encoded public key.
  */
@@ -35,20 +36,26 @@ function readPublicKey(): string {
   if (keyPath === undefined || keyPath === '') {
     throw new Error('Missing JWT_PUBLIC_KEY_PATH environment variable');
   }
+  const resolvedPath = resolve(keyPath);
+  const cached = publicKeyCache.get(resolvedPath);
+  if (cached !== undefined) {
+    return cached;
+  }
+  let contents: string;
   try {
-    return readFileSync(keyPath, 'utf8');
+    contents = readFileSync(resolvedPath, 'utf8');
   } catch {
     throw new Error(
-      `Cannot read JWT public key at "${resolve(keyPath)}" ` +
+      `Cannot read JWT public key at "${resolvedPath}" ` +
         `(working directory "${process.cwd()}")`,
     );
   }
+  publicKeyCache.set(resolvedPath, contents);
+  return contents;
 }
 
 /**
- * Reads a required non-blank env value.
- *
- * - throws when the variable is missing or whitespace-only.
+ * Read a required non-blank env value.
  *
  * @param name Env variable name to read.
  * @return The trimmed value.
@@ -62,10 +69,7 @@ function readRequired(name: string): string {
 }
 
 /**
- * Loads and validates the JWT verification config.
- *
- * - public key must look like a PEM block, issuer/audience non-blank
- * - throws on any problem so the app fails fast instead of running open.
+ * Load and validate the JWT verification config.
  *
  * @return The validated JWT config.
  */
