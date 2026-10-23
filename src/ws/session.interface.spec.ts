@@ -5,8 +5,8 @@
  * - branded parsers: ids and tokens delegate, blank values become undefined
  * - extract: upgrade URL query becomes branded ids plus the raw token
  * - resolve: authorized only for a verified token with `sub` bound to
- *   `userId`; every other shape rejects without touching the verifier more
- *   than once or at all.
+ *   `userId`, and the verified expiry becomes epoch milliseconds; every other
+ *   shape rejects without touching the verifier more than once or at all.
  */
 import { describe, it, expect, vi } from 'vitest';
 import {
@@ -97,7 +97,7 @@ describe('extractGatewayIdentity', () => {
 
 describe('resolveGatewayIdentity', () => {
   it('authorizes a verified token with sub bound to userId', () => {
-    const verify = vi.fn(() => ({ sub: 'user-123' }));
+    const verify = vi.fn(() => ({ sub: 'user-123', exp: 1_700_000_000 }));
 
     const result = resolveGatewayIdentity(makeIdentity(), verify);
 
@@ -105,12 +105,13 @@ describe('resolveGatewayIdentity', () => {
       kind: 'authorized',
       userId: 'user-123',
       clientId: 'client-456',
+      expiresAt: 1_700_000_000_000,
     });
     expect(verify).toHaveBeenCalledWith('good');
   });
 
   it('rejects a missing token without calling the verifier', () => {
-    const verify = vi.fn(() => ({ sub: 'user-123' }));
+    const verify = vi.fn(() => ({ sub: 'user-123', exp: 1_700_000_000 }));
 
     const result = resolveGatewayIdentity(
       makeIdentity({ token: undefined }),
@@ -132,7 +133,7 @@ describe('resolveGatewayIdentity', () => {
   });
 
   it('rejects a verified token that carries no subject', () => {
-    const verify = vi.fn(() => ({}));
+    const verify = vi.fn(() => ({ exp: 1_700_000_000 }));
 
     const result = resolveGatewayIdentity(makeIdentity(), verify);
 
@@ -143,7 +144,7 @@ describe('resolveGatewayIdentity', () => {
   });
 
   it('rejects missing ids despite a valid token', () => {
-    const verify = vi.fn(() => ({ sub: 'user-123' }));
+    const verify = vi.fn(() => ({ sub: 'user-123', exp: 1_700_000_000 }));
 
     const result = resolveGatewayIdentity(
       makeIdentity({ userId: undefined, clientId: undefined }),
@@ -157,7 +158,7 @@ describe('resolveGatewayIdentity', () => {
   });
 
   it('rejects a sub/userId mismatch', () => {
-    const verify = vi.fn(() => ({ sub: 'other-user' }));
+    const verify = vi.fn(() => ({ sub: 'other-user', exp: 1_700_000_000 }));
 
     const result = resolveGatewayIdentity(makeIdentity(), verify);
 

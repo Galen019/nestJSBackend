@@ -4,7 +4,6 @@
  * Single source of truth for issuer, audience, and public key.
  * Test code signs with the private key; the API verifies it here.
  * Fail closed on missing or malformed values.
- * The public key is cached per resolved path.
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -19,15 +18,10 @@ export interface JwtConfig {
 }
 
 /**
- * PEM cache keyed by resolved path.
- */
-const publicKeyCache = new Map<string, string>();
-
-/**
  * Read the JWT public key from env.
  *
  * Relative paths resolve from the working directory; prefer absolute paths
- * when the launch directory can vary. Cached per resolved path.
+ * when the launch directory can vary.
  *
  * @return The PEM-encoded public key.
  */
@@ -36,22 +30,14 @@ function readPublicKey(): string {
   if (keyPath === undefined || keyPath === '') {
     throw new Error('Missing JWT_PUBLIC_KEY_PATH environment variable');
   }
-  const resolvedPath = resolve(keyPath);
-  const cached = publicKeyCache.get(resolvedPath);
-  if (cached !== undefined) {
-    return cached;
-  }
-  let contents: string;
   try {
-    contents = readFileSync(resolvedPath, 'utf8');
+    return readFileSync(keyPath, 'utf8');
   } catch {
     throw new Error(
-      `Cannot read JWT public key at "${resolvedPath}" ` +
+      `Cannot read JWT public key at "${resolve(keyPath)}" ` +
         `(working directory "${process.cwd()}")`,
     );
   }
-  publicKeyCache.set(resolvedPath, contents);
-  return contents;
 }
 
 /**

@@ -2,12 +2,15 @@
  * Unit suite for JwtVerifierService (RS256 test-key flow).
  *
  * - test code signs with the private key, the service verifies with the public key
- * - covers valid, expired, wrong iss/aud, wrong alg, and tampered tokens.
+ * - covers valid, expired, wrong iss/aud, wrong alg, and tampered tokens
+ * - covers per-instance config caching: the resolved config is reused, a new
+ *   instance reads the current env and key file.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { sign } from 'jsonwebtoken';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { JwtVerifierService, extractBearerToken } from './jwt-verifier.service';
 
 /**
@@ -23,10 +26,20 @@ function loadTestKeys(): { privateKey: string; publicKey: string } {
   };
 }
 
+/**
+ * Builds a PEM-looking key that is not the committed fixture.
+ *
+ * @return A distinct PEM public key block.
+ */
+function otherPublicKey(): string {
+  return '-----BEGIN PUBLIC KEY-----\nother-key-material\n-----END PUBLIC KEY-----\n';
+}
+
 describe('JwtVerifierService', () => {
   const saved: Record<string, string | undefined> = {};
   let privateKey = '';
   let verifier: JwtVerifierService;
+  let dir: string | undefined;
 
   beforeEach(() => {
     for (const name of ['JWT_PUBLIC_KEY_PATH', 'JWT_ISSUER', 'JWT_AUDIENCE']) {
@@ -52,6 +65,10 @@ describe('JwtVerifierService', () => {
       } else {
         process.env[name] = value;
       }
+    }
+    if (dir !== undefined) {
+      rmSync(dir, { recursive: true, force: true });
+      dir = undefined;
     }
   });
 
@@ -119,6 +136,44 @@ describe('JwtVerifierService', () => {
     const tampered = `${token.slice(0, -2)}ab`;
 
     expect(() => verifier.verify(tampered)).toThrow();
+  });
+
+  it('caches the resolved config for the verifier instance', () => {
+    dir = mkdtempSync(join(tmpdir(), 'jwt-'));
+    const keyPath = join(dir, 'public.pem');
+    writeFileSync(keyPath, loadTestKeys().publicKey);
+    process.env.JWT_PUBLIC_KEY_PATH = keyPath;
+    const token = sign({ sub: 'user-123' }, privateKey, {
+      algorithm: 'RS256',
+      issuer: 'test-issuer',
+      audience: 'test-audience',
+      expiresIn: '1h',
+    });
+    const cached = new JwtVerifierService();
+    expect(cached.verify(token).sub).toBe('user-123');
+
+    writeFileSync(keyPath, otherPublicKey());
+    process.env.JWT_ISSUER = 'other-issuer';
+
+    expect(cached.verify(token).sub).toBe('user-123');
+  });
+
+  it('reads the config fresh for a new verifier instance', () => {
+    dir = mkdtempSync(join(tmpdir(), 'jwt-'));
+    const keyPath = join(dir, 'public.pem');
+    writeFileSync(keyPath, loadTestKeys().publicKey);
+    process.env.JWT_PUBLIC_KEY_PATH = keyPath;
+    const token = sign({ sub: 'user-123' }, privateKey, {
+      algorithm: 'RS256',
+      issuer: 'test-issuer',
+      audience: 'test-audience',
+      expiresIn: '1h',
+    });
+    expect(new JwtVerifierService().verify(token).sub).toBe('user-123');
+
+    writeFileSync(keyPath, otherPublicKey());
+
+    expect(() => new JwtVerifierService().verify(token)).toThrow();
   });
 
   it('parses Bearer headers case-insensitively and rejects other schemes', () => {

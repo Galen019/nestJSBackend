@@ -1,7 +1,7 @@
 /** Verifies RS256 JWT signatures and required claims. */
 import { Injectable } from '@nestjs/common';
 import { verify } from 'jsonwebtoken';
-import { getJwtConfig } from './auth.constants';
+import { getJwtConfig, type JwtConfig } from './auth.constants';
 
 /** Required verified claims, with optional issued-at and subject. */
 export interface JwtPayload {
@@ -59,9 +59,16 @@ export function extractBearerToken(
   return token === '' ? undefined : token;
 }
 
-/** Verifies RS256 JWTs using the configured public key. */
+/**
+ * Verifies RS256 JWTs using the configured public key.
+ *
+ * - resolves the config once on the first verification and reuses it
+ * - a key or issuer/audience change needs a new instance or a restart
+ */
 @Injectable()
 export class JwtVerifierService {
+  private config: JwtConfig | undefined;
+
   /**
    * Verifies a JWT's signature and claims.
    *
@@ -69,7 +76,7 @@ export class JwtVerifierService {
    * @return Verified payload.
    */
   verify(token: string): JwtPayload {
-    const config = getJwtConfig();
+    const config = this.getConfig();
     const decoded: unknown = verify(token, config.publicKey, {
       algorithms: ['RS256'],
       issuer: config.issuer,
@@ -79,6 +86,19 @@ export class JwtVerifierService {
       throw new Error('Invalid token payload');
     }
     return decoded;
+  }
+
+  /**
+   * Resolves the JWT config on first use and caches it per instance.
+   *
+   * - env is still read lazily, so suites can set it before the first verify
+   * - a malformed or missing config throws on every call and is never cached
+   *
+   * @return The cached JWT config.
+   */
+  private getConfig(): JwtConfig {
+    this.config ??= getJwtConfig();
+    return this.config;
   }
 
   /**

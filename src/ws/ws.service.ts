@@ -1,8 +1,18 @@
 /**
  * Manages WebSocket sessions, delivery, and lifecycle tracking.
+ *
+ * - OWNS the session lifecycle: registration, token expiry, close cleanup
+ * - expiry and close share one identity-checked release, so trackers see each
+ *   disconnect exactly once
+ * - terminates the socket when its JWT expires
  */
 
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { REDIS_CLIENT } from '../redis/redis.constants';
@@ -24,6 +34,7 @@ import {
   type UserId,
 } from './session.interface';
 import {
+  MAX_TIMER_DELAY_MS,
   WS_CLOSE_MESSAGE_TOO_BIG,
   isWsPayloadTooBigError,
 } from './ws.constants';
@@ -44,7 +55,7 @@ export type RegisterSessionResult =
  * Stores active sessions and notifies lifecycle trackers.
  */
 @Injectable()
-export class WsService {
+export class WsService implements OnModuleDestroy {
   private readonly logger = new Logger(WsService.name);
   private readonly sessions = new Map<ClientId, Session>();
   private readonly userClients = new Map<UserId, Set<ClientId>>();
@@ -65,11 +76,15 @@ export class WsService {
   /**
    * Validates, stores, and observes a new connection.
    *
-   * @param params Socket and parsed connection IDs.
+   * - the verified token expiry arms a timer that terminates the socket later
+   * - expiry and `close` both call the identity-checked release, so registry
+   *   removal and the disconnect fan-out happen exactly once
+   *
+   * @param params Socket, parsed connection IDs, and token expiry.
    * @return Registration result.
    */
   handleConnection(params: ConnectionParams): RegisterSessionResult {
-    const { socket, userId, clientId } = params;
+    const { socket, userId, clientId, expiresAt } = params;
     if (userId === undefined || clientId === undefined) {
       this.logger.warn('Rejecting connection with missing userId/clientId');
       socket.close(WS_CLOSE_POLICY_VIOLATION, 'missing userId/clientId');
@@ -86,6 +101,8 @@ export class WsService {
       clientId,
       socket,
       presenceToken: randomUUID(),
+      expiresAt,
+      expiryTimer: undefined,
     };
     this.sessions.set(clientId, session);
     this.trackMembership(userId, clientId);
@@ -97,12 +114,11 @@ export class WsService {
       this.handleError(userId, clientId, err);
     });
     socket.on('close', () => {
-      this.sessions.delete(clientId);
-      this.untrackMembership(userId, clientId);
-      this.fanOut(session, 'disconnect');
+      this.release(session);
       this.logger.log(`${userId} #${clientId} disconnected`);
     });
     this.logger.log(`${userId} #${clientId} connected`);
+    this.scheduleExpiry(session);
     return { kind: 'registered' };
   }
 
@@ -196,6 +212,108 @@ export class WsService {
    */
   private countUserSessions(userId: UserId): number {
     return this.userClients.get(userId)?.size ?? 0;
+  }
+
+  /**
+   * Arms the timer that terminates the socket when its token expires.
+   *
+   * - waits at most `MAX_TIMER_DELAY_MS` per call because longer delays fire
+   *   immediately; the timer re-arms against the remaining time
+   * - an already stale expiry closes on the spot.
+   *
+   * @param session Session to expire.
+   * @return Nothing.
+   */
+  private scheduleExpiry(session: Session): void {
+    const remaining = session.expiresAt - Date.now();
+    if (remaining <= 0) {
+      this.handleExpiry(session);
+      return;
+    }
+    session.expiryTimer = setTimeout(
+      () => this.handleExpiryTimer(session),
+      Math.min(remaining, MAX_TIMER_DELAY_MS),
+    );
+  }
+
+  /**
+   * Expires the session, or re-arms when the capped wait ended early.
+   *
+   * @param session Session the timer belongs to.
+   * @return Nothing.
+   */
+  private handleExpiryTimer(session: Session): void {
+    if (session.expiresAt - Date.now() > 0) {
+      this.scheduleExpiry(session);
+      return;
+    }
+    this.handleExpiry(session);
+  }
+
+  /**
+   * Releases an expired session and terminates its socket.
+   *
+   * - removal happens before the fan-out, so trackers see the real remaining
+   *   session count even when several sessions expire together
+   * - terminating skips the close handshake, so an expired client cannot keep
+   *   sending frames while the socket closes
+   *
+   * @param session Expired session.
+   * @return Nothing.
+   */
+  private handleExpiry(session: Session): void {
+    if (!this.release(session)) {
+      return;
+    }
+    this.logger.log(`${session.userId} #${session.clientId} token expired`);
+    session.socket.terminate();
+  }
+
+  /**
+   * Removes a session from the registry and fans its disconnect out once.
+   *
+   * - the registry is the source of truth: a close arriving after expiry, or
+   *   for a replaced `clientId`, finds no matching entry and does nothing
+   * - counts the user's sessions after removal so trackers always see the
+   *   remaining total
+   *
+   * @param session Session leaving the registry.
+   * @return Whether this call performed the release.
+   */
+  private release(session: Session): boolean {
+    if (this.sessions.get(session.clientId) !== session) {
+      return false;
+    }
+    this.clearExpiryTimer(session);
+    this.sessions.delete(session.clientId);
+    this.untrackMembership(session.userId, session.clientId);
+    this.fanOut(session, 'disconnect');
+    return true;
+  }
+
+  /**
+   * Cancels a pending expiry timer, if any.
+   *
+   * @param session Session whose timer to clear.
+   * @return Nothing.
+   */
+  private clearExpiryTimer(session: Session): void {
+    if (session.expiryTimer === undefined) {
+      return;
+    }
+    clearTimeout(session.expiryTimer);
+    session.expiryTimer = undefined;
+  }
+
+  /**
+   * Clears every pending expiry timer on shutdown.
+   *
+   * @return Nothing.
+   */
+  onModuleDestroy(): void {
+    for (const session of this.sessions.values()) {
+      this.clearExpiryTimer(session);
+    }
   }
 
   /**

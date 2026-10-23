@@ -1,7 +1,8 @@
 /**
  * Unit suite for WsGateway with mocked WsService and JWT verifier.
  *
- * - connection: parses userId/clientId/token and delegates on valid token
+ * - connection: parses userId/clientId/token and delegates on valid token,
+ *   forwarding the verified expiry in milliseconds
  * - auth: closes 1008 on missing/invalid token, missing sub, or sub mismatch, no delegation
  * - missing ids: rejected in the gateway with 1008, never delegated.
  */
@@ -94,6 +95,7 @@ describe('WsGateway', () => {
       socket,
       userId: 'user-123',
       clientId: 'client-456',
+      expiresAt: 9_999_999_999_000,
     });
   });
 
