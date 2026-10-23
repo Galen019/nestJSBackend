@@ -3,10 +3,11 @@
  *
  * - Signs RS256 tokens with the committed test private key
  * - The API verifies with `test-public.pem` via `JWT_PUBLIC_KEY_PATH`
+ * - Reads back `exp` so suites can advance fake clocks to the exact expiry
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { sign, type Algorithm, type SignOptions } from 'jsonwebtoken';
+import { decode, sign, type Algorithm, type SignOptions } from 'jsonwebtoken';
 
 /**
  * Test JWT issuer and audience values.
@@ -78,4 +79,25 @@ export function signTestToken(options: SignTestTokenOptions = {}): string {
  */
 export function bearerHeader(token: string): string {
   return `Bearer ${token}`;
+}
+
+/**
+ * Reads a signed test token's expiry.
+ *
+ * - JWT `exp` is whole seconds; callers can advance a fake clock to this
+ *   instant instead of waiting in real time
+ *
+ * @param token Compact JWT signed by `signTestToken`.
+ * @return Expiry in epoch milliseconds.
+ */
+export function testTokenExpiresAt(token: string): number {
+  const decoded = decode(token);
+  if (
+    typeof decoded !== 'object' ||
+    decoded === null ||
+    typeof decoded.exp !== 'number'
+  ) {
+    throw new Error('Expected a decoded token with an exp claim');
+  }
+  return decoded.exp * 1000;
 }

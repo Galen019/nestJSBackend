@@ -31,7 +31,9 @@ export class WsGateway implements OnGatewayConnection {
    * - resolves the upgrade identity to one decision: reject closes once with
    *   1008 carrying the reason, authorize delegates to `WsService`
    * - tokens require a `sub` bound to `userId`; anonymous tokens never claim
-   *   an identity.
+   *   an identity
+   * - the verified expiry travels with the session so the service can close
+   *   the socket when the token dies.
    *
    * @param client Per-connection WebSocket instance.
    * @param args Extra connection args, first entry is the upgrade request.
@@ -49,6 +51,7 @@ export class WsGateway implements OnGatewayConnection {
       socket: client,
       userId: decision.userId,
       clientId: decision.clientId,
+      expiresAt: decision.expiresAt,
     });
   }
 }

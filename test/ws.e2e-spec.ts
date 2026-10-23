@@ -3,6 +3,9 @@
  *
  * - connect: valid token + matching sub registers a session
  * - auth: missing/invalid/expired token or sub mismatch closes with 1008
+ * - expiry: a token that dies mid-session terminates the socket (1006), the
+ *   session leaves the registry, and the same clientId reconnects with a
+ *   fresh session
  * - send: server routes JSON to the right socket, false for unknown clients
  * - disconnect: session removed from the map
  * - duplicate: new socket closed, existing session kept
@@ -40,6 +43,7 @@ import {
   TEST_JWT_AUDIENCE,
   TEST_JWT_ISSUER,
   signTestToken,
+  testTokenExpiresAt,
 } from './auth-test.helper';
 import { createDynamoFake } from './dynamo-test.helper';
 import {
@@ -121,6 +125,7 @@ describe('WsGateway (e2e)', () => {
         // ignore teardown errors for already-closed sockets
       }
     }
+    vi.useRealTimers();
     vi.restoreAllMocks();
     await app?.close();
   });
@@ -240,6 +245,44 @@ describe('WsGateway (e2e)', () => {
     await expect(closeCode).resolves.toBe(1008);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(wsService.getSessionCount()).toBe(0);
+  });
+
+  it('terminates the socket when the token expires mid-session', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      const token = signTestToken({ sub: 'user-123', expiresIn: '1h' });
+      const expiresAt = testTokenExpiresAt(token);
+      const client = await connectClient(
+        `userId=user-123&clientId=client-456&token=${encodeURIComponent(token)}`,
+      );
+      await waitForSessionCount(1);
+      const session = wsService.getSession(requireClientId('client-456'));
+      expect(session?.expiresAt).toBe(expiresAt);
+
+      const closed = new Promise<{ code: number; reason: string }>(
+        (resolve) => {
+          client.once('close', (code: number, reason: Buffer) => {
+            resolve({ code, reason: reason.toString() });
+          });
+        },
+      );
+
+      vi.advanceTimersByTime(Math.max(1, expiresAt - Date.now()));
+
+      await expect(closed).resolves.toEqual({ code: 1006, reason: '' });
+      await waitForSessionCount(0);
+
+      const reconnected = await connectClient(
+        authQuery('user-123', 'client-456'),
+      );
+      await waitForSessionCount(1);
+      expect(reconnected.readyState).toBe(WebSocket.OPEN);
+      expect(
+        wsService.getSession(requireClientId('client-456'))?.presenceToken,
+      ).not.toBe(session?.presenceToken);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('closes connections on sub/userId mismatch', async () => {

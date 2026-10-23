@@ -19,6 +19,7 @@ export interface SessionSocket {
   ): unknown;
   send(payload: string): void;
   close(code?: number, reason?: string): void;
+  terminate(): void;
 }
 
 /**
@@ -28,6 +29,8 @@ export interface ConnectionParams {
   socket: SessionSocket;
   userId: UserId | undefined;
   clientId: ClientId | undefined;
+  /** Token expiry in epoch milliseconds. */
+  expiresAt: number;
 }
 
 /**
@@ -38,6 +41,10 @@ export interface Session {
   clientId: ClientId;
   socket: SessionSocket;
   presenceToken: string;
+  /** Token expiry in epoch milliseconds. */
+  expiresAt: number;
+  /** Pending expiry timer, cleared on release. */
+  expiryTimer: ReturnType<typeof setTimeout> | undefined;
 }
 
 /** DI token for the ordered session-tracker fan-out list. */
@@ -219,7 +226,12 @@ export interface GatewayIdentity {
  * Gateway authorization result.
  */
 export type ResolveIdentityResult =
-  | { kind: 'authorized'; userId: UserId; clientId: ClientId }
+  | {
+      kind: 'authorized';
+      userId: UserId;
+      clientId: ClientId;
+      expiresAt: number;
+    }
   | { kind: 'rejected'; reason: string };
 
 /**
@@ -250,22 +262,23 @@ export function extractGatewayIdentity(args: unknown[]): GatewayIdentity {
  *
  * @param identity Parsed upgrade identity.
  * @param verify Token verifier that throws when invalid.
- * @return Authorization result for the gateway.
+ * @return Authorization result for the gateway, with expiry in epoch ms.
  */
 export function resolveGatewayIdentity(
   identity: GatewayIdentity,
-  verify: (token: string) => { sub?: string },
+  verify: (token: string) => { sub?: string; exp: number },
 ): ResolveIdentityResult {
   const { userId, clientId, token } = identity;
   if (token === undefined) {
     return { kind: 'rejected', reason: 'missing token' };
   }
-  let sub: string | undefined;
+  let payload: { sub?: string; exp: number };
   try {
-    sub = verify(token).sub;
+    payload = verify(token);
   } catch {
     return { kind: 'rejected', reason: 'invalid token' };
   }
+  const { sub } = payload;
   if (sub === undefined) {
     return { kind: 'rejected', reason: 'missing token subject' };
   }
@@ -275,7 +288,12 @@ export function resolveGatewayIdentity(
   if (sub !== userId) {
     return { kind: 'rejected', reason: 'token subject mismatch' };
   }
-  return { kind: 'authorized', userId, clientId };
+  return {
+    kind: 'authorized',
+    userId,
+    clientId,
+    expiresAt: payload.exp * 1000,
+  };
 }
 
 /**

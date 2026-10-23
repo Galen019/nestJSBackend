@@ -10,6 +10,9 @@
  *   warn and reject; sendToLocalUser fans out to every local session of the
  *   user except the excluded origin client
  * - close: the registration close listener removes the session and fans out disconnect by token
+ * - expiry: the token timer terminates the socket, releases the registry and
+ *   fans out once, counts simultaneous expiries correctly, clears on close,
+ *   reschedules past the timer cap, and clears on destroy
  * - duplicate: new socket closed with 1008, existing session kept
  * - message: inbound payload is logged at debug with userId/clientId attribution
  * - sendMessage: valid frames route verbatim via `sendToUser` excluding
@@ -31,6 +34,7 @@ import {
   fireClose,
   fireError,
   fireMessage,
+  futureExpiryMs,
   requireClientId,
   requireUserId,
 } from '../../test/ws-test.helper';
@@ -45,6 +49,7 @@ import {
   type SessionTracker,
 } from './session.interface';
 import type { SocketFake } from '../../test/ws-test.helper';
+import { MAX_TIMER_DELAY_MS } from './ws.constants';
 import { WS_CLOSE_POLICY_VIOLATION, WsService } from './ws.service';
 
 /**
@@ -127,6 +132,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     return fake;
   }
@@ -138,6 +144,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(result).toEqual({ kind: 'registered' });
@@ -151,6 +158,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     const session = service.getSession(requireClientId('client-456'));
@@ -171,6 +179,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(mocks.on).toHaveBeenCalledWith('message', expect.any(Function));
@@ -184,6 +193,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     const session = service.getSession(requireClientId('client-456'));
@@ -205,12 +215,14 @@ describe('WsService', () => {
       socket: first.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     expect(service.getSessionCount()).toBe(1);
     service.handleConnection({
       socket: second.socket,
       userId: parseUserId('user-2'),
       clientId: parseClientId('client-2'),
+      expiresAt: futureExpiryMs(),
     });
     expect(service.getSessionCount()).toBe(2);
   });
@@ -222,11 +234,13 @@ describe('WsService', () => {
       socket: first.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     service.handleConnection({
       socket: second.socket,
       userId: parseUserId('user-2'),
       clientId: parseClientId('client-2'),
+      expiresAt: futureExpiryMs(),
     });
 
     const ok = service.sendToClient(requireClientId('client-1'), {
@@ -254,6 +268,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(
@@ -268,6 +283,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     fireClose(fake);
@@ -283,11 +299,13 @@ describe('WsService', () => {
       socket: first.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     service.handleConnection({
       socket: second.socket,
       userId: parseUserId('user-2'),
       clientId: parseClientId('client-2'),
+      expiresAt: futureExpiryMs(),
     });
 
     fireClose(first);
@@ -305,12 +323,14 @@ describe('WsService', () => {
       socket: oldClient.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     const result = service.handleConnection({
       socket: newClient.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(result).toEqual({ kind: 'duplicate' });
@@ -340,6 +360,7 @@ describe('WsService', () => {
       socket,
       userId: undefined,
       clientId: undefined,
+      expiresAt: futureExpiryMs(),
     });
 
     expect(result).toEqual({ kind: 'rejected' });
@@ -357,6 +378,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('   '),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(mocks.close).toHaveBeenCalledWith(
@@ -372,6 +394,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     const debugSpy = vi
       .spyOn(Logger.prototype, 'debug')
@@ -390,6 +413,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     const debugSpy = vi
       .spyOn(Logger.prototype, 'debug')
@@ -408,6 +432,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     const debugSpy = vi
       .spyOn(Logger.prototype, 'debug')
@@ -429,6 +454,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     const warnSpy = vi
       .spyOn(Logger.prototype, 'warn')
@@ -455,6 +481,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     const warnSpy = vi
       .spyOn(Logger.prototype, 'warn')
@@ -479,6 +506,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     const circular: Record<string, unknown> = {};
     circular.self = circular;
@@ -496,6 +524,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
@@ -520,11 +549,13 @@ describe('WsService', () => {
       socket: first.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     service.handleConnection({
       socket: second.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-789'),
+      expiresAt: futureExpiryMs(),
     });
 
     const tokens = tracker.handleConnect.mock.calls.map(
@@ -541,11 +572,13 @@ describe('WsService', () => {
       socket: first.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     service.handleConnection({
       socket: second.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-2'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(tracker.handleConnect).toHaveBeenCalledTimes(2);
@@ -580,6 +613,7 @@ describe('WsService', () => {
       socket: fake.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     const token = tracker.handleConnect.mock.calls[0]?.[0].token;
 
@@ -601,6 +635,7 @@ describe('WsService', () => {
       socket: oldClient.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
     tracker.handleConnect.mockClear();
 
@@ -608,6 +643,7 @@ describe('WsService', () => {
       socket: newClient.socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(tracker.handleConnect).not.toHaveBeenCalled();
@@ -621,6 +657,7 @@ describe('WsService', () => {
       socket,
       userId: undefined,
       clientId: undefined,
+      expiresAt: futureExpiryMs(),
     });
 
     expect(tracker.handleConnect).not.toHaveBeenCalled();
@@ -647,6 +684,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
@@ -685,6 +723,7 @@ describe('WsService', () => {
       socket,
       userId: parseUserId('user-123'),
       clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
     });
 
     expect(tracker.handleConnect).toHaveBeenCalledTimes(1);
@@ -777,16 +816,19 @@ describe('WsService', () => {
       socket: first.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     service.handleConnection({
       socket: second.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-2'),
+      expiresAt: futureExpiryMs(),
     });
     service.handleConnection({
       socket: other.socket,
       userId: parseUserId('user-2'),
       clientId: parseClientId('client-3'),
+      expiresAt: futureExpiryMs(),
     });
 
     const delivered = service.sendToLocalUser(requireUserId('user-1'), {
@@ -810,11 +852,13 @@ describe('WsService', () => {
       socket: first.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-1'),
+      expiresAt: futureExpiryMs(),
     });
     service.handleConnection({
       socket: second.socket,
       userId: parseUserId('user-1'),
       clientId: parseClientId('client-2'),
+      expiresAt: futureExpiryMs(),
     });
 
     const delivered = service.sendToLocalUser(
@@ -934,5 +978,179 @@ describe('WsService', () => {
     });
     expect(fake.mocks.close).not.toHaveBeenCalled();
     expect(service.getSessionCount()).toBe(1);
+  });
+
+  describe('token expiry', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /**
+     * Registers one session with the given expiry.
+     *
+     * @param clientId Client key to register.
+     * @param expiresAt Token expiry in epoch milliseconds.
+     * @param userId Owner of the session.
+     * @return The fake socket for the session.
+     */
+    function connectExpiring(
+      clientId: string,
+      expiresAt: number,
+      userId = 'user-123',
+    ): SocketFake {
+      const fake = createSocketFake();
+      service.handleConnection({
+        socket: fake.socket,
+        userId: parseUserId(userId),
+        clientId: parseClientId(clientId),
+        expiresAt,
+      });
+      return fake;
+    }
+
+    it('terminates the socket when the token expires', () => {
+      const fake = connectExpiring('client-456', Date.now() + 60_000);
+      const logSpy = vi
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
+
+      vi.advanceTimersByTime(59_999);
+      expect(fake.mocks.terminate).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1);
+
+      expect(fake.mocks.terminate).toHaveBeenCalledTimes(1);
+      expect(fake.mocks.close).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith('user-123 #client-456 token expired');
+      expect(service.getSessionCount()).toBe(0);
+    });
+
+    it('fans disconnect out once and leaves the registry empty', () => {
+      const fake = connectExpiring('client-456', Date.now() + 1_000);
+      const token = tracker.handleConnect.mock.calls[0]?.[0].token;
+
+      vi.advanceTimersByTime(1_000);
+
+      expect(tracker.handleDisconnect).toHaveBeenCalledTimes(1);
+      expect(tracker.handleDisconnect).toHaveBeenCalledWith({
+        userId: 'user-123',
+        clientId: 'client-456',
+        token,
+        userSessionCount: 0,
+      });
+      expect(service.getSessionCount()).toBe(0);
+
+      fireClose(fake);
+
+      expect(tracker.handleDisconnect).toHaveBeenCalledTimes(1);
+      expect(service.getSessionCount()).toBe(0);
+    });
+
+    it('reports the remaining sibling count when one token expires', () => {
+      const expiring = connectExpiring('client-1', Date.now() + 1_000);
+      const sibling = connectExpiring('client-2', Date.now() + 10_000);
+
+      vi.advanceTimersByTime(1_000);
+
+      expect(tracker.handleDisconnect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          clientId: 'client-1',
+          userSessionCount: 1,
+        }),
+      );
+      expect(expiring.mocks.terminate).toHaveBeenCalledTimes(1);
+      expect(sibling.mocks.terminate).not.toHaveBeenCalled();
+      expect(service.getSessionCount()).toBe(1);
+    });
+
+    it('reports zero when sessions expire together', () => {
+      const first = connectExpiring('client-1', Date.now() + 1_000);
+      const second = connectExpiring('client-2', Date.now() + 1_000);
+      const tokens = tracker.handleConnect.mock.calls.map(
+        ([event]) => event.token,
+      );
+
+      vi.advanceTimersByTime(1_000);
+
+      expect(
+        tracker.handleDisconnect.mock.calls.map(([event]) => event),
+      ).toEqual([
+        {
+          userId: 'user-123',
+          clientId: 'client-1',
+          token: tokens[0],
+          userSessionCount: 1,
+        },
+        {
+          userId: 'user-123',
+          clientId: 'client-2',
+          token: tokens[1],
+          userSessionCount: 0,
+        },
+      ]);
+      expect(first.mocks.terminate).toHaveBeenCalledTimes(1);
+      expect(second.mocks.terminate).toHaveBeenCalledTimes(1);
+      expect(service.getSessionCount()).toBe(0);
+    });
+
+    it('clears the timer when the socket closes first', () => {
+      const fake = connectExpiring('client-456', Date.now() + 1_000);
+
+      fireClose(fake);
+      vi.advanceTimersByTime(10_000);
+
+      expect(fake.mocks.terminate).not.toHaveBeenCalled();
+      expect(tracker.handleDisconnect).toHaveBeenCalledTimes(1);
+      expect(service.getSessionCount()).toBe(0);
+    });
+
+    it('reschedules instead of firing early beyond the timer cap', () => {
+      const fake = connectExpiring(
+        'client-456',
+        Date.now() + MAX_TIMER_DELAY_MS + 5_000,
+      );
+
+      vi.advanceTimersByTime(MAX_TIMER_DELAY_MS);
+      expect(fake.mocks.terminate).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(5_000);
+      expect(fake.mocks.terminate).toHaveBeenCalledTimes(1);
+    });
+
+    it('terminates immediately when the expiry is already in the past', () => {
+      const fake = connectExpiring('client-456', Date.now() - 1);
+
+      expect(fake.mocks.terminate).toHaveBeenCalledTimes(1);
+      expect(tracker.handleDisconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves the original timer armed when a duplicate is rejected', () => {
+      const original = connectExpiring('client-1', Date.now() + 1_000);
+      const duplicate = connectExpiring('client-1', Date.now() + 60_000);
+
+      vi.advanceTimersByTime(1_000);
+
+      expect(original.mocks.terminate).toHaveBeenCalledTimes(1);
+      expect(duplicate.mocks.close).toHaveBeenCalledWith(
+        WS_CLOSE_POLICY_VIOLATION,
+        'duplicate clientId',
+      );
+      expect(duplicate.mocks.terminate).not.toHaveBeenCalled();
+    });
+
+    it('clears pending expiry timers on module destroy', () => {
+      const fake = connectExpiring('client-456', Date.now() + 60_000);
+      expect(vi.getTimerCount()).toBe(1);
+
+      service.onModuleDestroy();
+
+      expect(vi.getTimerCount()).toBe(0);
+      vi.advanceTimersByTime(120_000);
+      expect(fake.mocks.terminate).not.toHaveBeenCalled();
+    });
   });
 });

@@ -50,8 +50,9 @@ export function requireClientId(value: string): ClientId {
  *
  * - `satisfies` validates the shape without widening or casting
  * - defaults `readyState` to OPEN so sends succeed
- * - stubs `on`/`send`/`close` with vitest mocks, and `send` also captures
- *   into `sent` for suites that read deliveries instead of asserting calls.
+ * - stubs `on`/`send`/`close`/`terminate` with vitest mocks, and `send` also
+ *   captures into `sent` for suites that read deliveries instead of asserting
+ *   calls.
  *
  * @return Fake socket plus its mocks and captured payloads.
  */
@@ -68,20 +69,31 @@ export function createSocketFake() {
     sent.push(payload);
   });
   const close = vi.fn<(code?: number, reason?: string) => void>();
+  const terminate = vi.fn<() => void>();
   const readyState: number = WebSocket.OPEN;
   const socket = {
     readyState,
     on,
     send,
     close,
+    terminate,
   } satisfies SessionSocket;
-  return { socket, mocks: { on, send, close }, sent };
+  return { socket, mocks: { on, send, close, terminate }, sent };
 }
 
 /**
  * Socket stub type shared by unit and e2e suites.
  */
 export type SocketFake = ReturnType<typeof createSocketFake>;
+
+/**
+ * Returns an expiry far enough ahead that no test timer fires.
+ *
+ * @return Epoch milliseconds one hour from now.
+ */
+export function futureExpiryMs(): number {
+  return Date.now() + 60 * 60 * 1000;
+}
 
 /**
  * Finds the listener the registry attached for one socket event.

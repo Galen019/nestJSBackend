@@ -21,6 +21,7 @@ import {
 } from '../../test/subscriber-test.helper';
 import {
   createSocketFake,
+  futureExpiryMs,
   requireClientId,
   requireUserId,
 } from '../../test/ws-test.helper';
@@ -64,6 +65,7 @@ describe('WsModule', () => {
       socket: fake.socket,
       userId: requireUserId('user-1'),
       clientId: requireClientId('client-a'),
+      expiresAt: futureExpiryMs(),
     });
     await vi.waitFor(
       () => {

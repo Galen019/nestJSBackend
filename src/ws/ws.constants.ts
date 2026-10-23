@@ -9,6 +9,11 @@ export const DEFAULT_WS_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 /** WebSocket close code for oversized frames. */
 export const WS_CLOSE_MESSAGE_TOO_BIG = 1009;
 
+/**
+ * Largest delay a single `setTimeout` accepts; longer values fire immediately.
+ */
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 /** `ws` error code for oversized frames. */
 export const WS_ERR_UNSUPPORTED_MESSAGE_LENGTH =
   'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH';

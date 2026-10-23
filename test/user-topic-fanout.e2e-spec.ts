@@ -10,7 +10,8 @@
  *   covered in isolation by `ws.module.spec.ts`
  * - broadcast: sendToUser on replica A reaches local sessions on both replicas
  * - isolation: sessions of other users receive nothing
- * - no-echo: the excluded origin client is skipped on every replica.
+ * - no-echo: the excluded origin client is skipped on every replica
+ * - expiry: sessions that expire together still release the last subscription.
  */
 import { Test, type TestingModule } from '@nestjs/testing';
 import { describe, it, afterEach, expect, vi } from 'vitest';
@@ -27,6 +28,7 @@ import {
 import { WsService } from '../src/ws/ws.service';
 import {
   createSocketFake,
+  futureExpiryMs,
   requireClientId,
   requireUserId,
   type SocketFake,
@@ -110,6 +112,7 @@ describe('user-topic fan-out (e2e)', () => {
       socket: fake.socket,
       userId: requireUserId(userId),
       clientId: requireClientId(clientId),
+      expiresAt: futureExpiryMs(),
     });
     await vi.waitFor(
       () => {
@@ -170,5 +173,43 @@ describe('user-topic fan-out (e2e)', () => {
 
     expect(origin.sent).toEqual([]);
     expect(peer.sent).toEqual([JSON.stringify({ type: 'HELLO' })]);
+  });
+
+  it('releases the last subscription when sessions expire together', async () => {
+    const bus = createPubSubBus();
+    const replica = await buildReplica(bus);
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    try {
+      const expiry = Date.now() + 1_000;
+      const first = createSocketFake();
+      const second = createSocketFake();
+      replica.ws.handleConnection({
+        socket: first.socket,
+        userId: requireUserId('user-1'),
+        clientId: requireClientId('client-a'),
+        expiresAt: expiry,
+      });
+      replica.ws.handleConnection({
+        socket: second.socket,
+        userId: requireUserId('user-1'),
+        clientId: requireClientId('client-b'),
+        expiresAt: expiry,
+      });
+      const channel = channelFor(requireUserId('user-1'));
+      await vi.waitFor(() =>
+        expect(replica.subscriber.subscribe).toHaveBeenCalledTimes(1),
+      );
+
+      vi.advanceTimersByTime(1_000);
+
+      await vi.waitFor(() =>
+        expect(replica.subscriber.unsubscribe).toHaveBeenCalledWith(channel),
+      );
+      expect(replica.ws.getSessionCount()).toBe(0);
+      expect(first.mocks.terminate).toHaveBeenCalledTimes(1);
+      expect(second.mocks.terminate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
