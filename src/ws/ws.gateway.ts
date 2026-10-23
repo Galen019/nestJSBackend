@@ -1,5 +1,5 @@
 /**
- * `/ws` gateway that authorizes connections and delegates session handling.
+ * Authorizes `/ws` connections and delegates session handling.
  */
 
 import { OnGatewayConnection, WebSocketGateway } from '@nestjs/websockets';
@@ -12,11 +12,7 @@ import {
 import { WS_CLOSE_POLICY_VIOLATION, WsService } from './ws.service';
 
 /**
- * Gateway bound to path `/ws` on the underlying HTTP server.
- *
- * - `handleConnection` associates each socket with its `ClientId` via the service
- * - the service owns the full session lifecycle, including `close` cleanup
- * - inbound `message`/`error` frames are observed by service listeners.
+ * WebSocket gateway bound to `/ws`.
  */
 @WebSocketGateway({ path: '/ws' })
 export class WsGateway implements OnGatewayConnection {
@@ -26,17 +22,10 @@ export class WsGateway implements OnGatewayConnection {
   ) {}
 
   /**
-   * Associates a new socket with its `ClientId` session.
+   * Resolves identity and registers authorized sockets.
    *
-   * - resolves the upgrade identity to one decision: reject closes once with
-   *   1008 carrying the reason, authorize delegates to `WsService`
-   * - tokens require a `sub` bound to `userId`; anonymous tokens never claim
-   *   an identity
-   * - the verified expiry travels with the session so the service can close
-   *   the socket when the token dies.
-   *
-   * @param client Per-connection WebSocket instance.
-   * @param args Extra connection args, first entry is the upgrade request.
+   * @param client WebSocket instance.
+   * @param args Connection arguments, starting with the upgrade request.
    */
   handleConnection(client: SessionSocket, ...args: unknown[]): void {
     const decision = resolveGatewayIdentity(

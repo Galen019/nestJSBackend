@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { verify } from 'jsonwebtoken';
 import { getJwtConfig, type JwtConfig } from './auth.constants';
 
-/** Required verified claims, with optional issued-at and subject. */
+/** Verified JWT claims. */
 export interface JwtPayload {
   iss: string;
   aud: string | string[];
@@ -13,10 +13,10 @@ export interface JwtPayload {
 }
 
 /**
- * Checks that a decoded value has valid issuer, audience, and expiry claims.
+ * Checks required JWT claims.
  *
- * @param value Decoded token payload from `jsonwebtoken`.
- * @return Whether the payload has the required claims.
+ * @param value Decoded token payload.
+ * @return Whether the claims are valid.
  */
 function isJwtPayload(value: unknown): value is JwtPayload {
   if (typeof value !== 'object' || value === null) {
@@ -37,13 +37,13 @@ function isJwtPayload(value: unknown): value is JwtPayload {
 }
 
 /**
- * Extracts the token from an `Authorization` header value.
+ * Extracts a Bearer token from an authorization header.
  *
  * - accepts `Bearer <jwt>` case-insensitively with surrounding whitespace
  * - returns undefined for missing or non-Bearer schemes (fail-closed).
  *
- * @param header Raw `Authorization` header value.
- * @return The token, or undefined when the scheme is wrong.
+ * @param header Authorization header value.
+ * @return The token, or undefined if invalid.
  */
 export function extractBearerToken(
   header: string | undefined,
@@ -60,10 +60,7 @@ export function extractBearerToken(
 }
 
 /**
- * Verifies RS256 JWTs using the configured public key.
- *
- * - resolves the config once on the first verification and reuses it
- * - a key or issuer/audience change needs a new instance or a restart
+ * Verifies RS256 JWTs using cached configuration.
  */
 @Injectable()
 export class JwtVerifierService {
@@ -72,7 +69,7 @@ export class JwtVerifierService {
   /**
    * Verifies a JWT's signature and claims.
    *
-   * @param token Compact JWT to verify.
+   * @param token JWT to verify.
    * @return Verified payload.
    */
   verify(token: string): JwtPayload {
@@ -89,12 +86,12 @@ export class JwtVerifierService {
   }
 
   /**
-   * Resolves the JWT config on first use and caches it per instance.
+   * Loads and caches JWT config on first use.
    *
    * - env is still read lazily, so suites can set it before the first verify
    * - a malformed or missing config throws on every call and is never cached
    *
-   * @return The cached JWT config.
+   * @return Cached JWT config.
    */
   private getConfig(): JwtConfig {
     this.config ??= getJwtConfig();
@@ -104,7 +101,7 @@ export class JwtVerifierService {
   /**
    * Extracts and verifies a JWT from an authorization header.
    *
-   * @param header Raw `Authorization` header value.
+   * @param header Authorization header value.
    * @return Verified payload.
    */
   verifyHeader(header: string | undefined): JwtPayload {

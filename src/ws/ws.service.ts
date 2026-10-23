@@ -1,10 +1,5 @@
 /**
- * Manages WebSocket sessions, delivery, and lifecycle tracking.
- *
- * - OWNS the session lifecycle: registration, token expiry, close cleanup
- * - expiry and close share one identity-checked release, so trackers see each
- *   disconnect exactly once
- * - terminates the socket when its JWT expires
+ * Manages WebSocket sessions and delivery.
  */
 
 import {
@@ -39,20 +34,18 @@ import {
   isWsPayloadTooBigError,
 } from './ws.constants';
 
-/** Close code for rejected connections. */
+/** Rejected connection close code. */
 export const WS_CLOSE_POLICY_VIOLATION = 1008;
 
-/** Maximum logged payload length. */
+/** Maximum payload length in logs. */
 const MAX_LOGGED_PAYLOAD_CHARS = 500;
 
-/**
- * Result of a session registration attempt.
- */
+/** Session registration outcome. */
 export type RegisterSessionResult =
   { kind: 'registered' } | { kind: 'duplicate' } | { kind: 'rejected' };
 
 /**
- * Stores active sessions and notifies lifecycle trackers.
+ * Stores sessions and notifies trackers.
  */
 @Injectable()
 export class WsService implements OnModuleDestroy {
@@ -61,10 +54,10 @@ export class WsService implements OnModuleDestroy {
   private readonly userClients = new Map<UserId, Set<ClientId>>();
 
   /**
-   * Creates the registry with its trackers and publisher.
+   * Creates the session registry.
    *
-   * @param trackers Session lifecycle observers.
-   * @param publisher Redis connection for broadcasts.
+   * @param trackers Session observers.
+   * @param publisher Redis publisher.
    */
   constructor(
     @Inject(SESSION_TRACKERS)
@@ -74,14 +67,10 @@ export class WsService implements OnModuleDestroy {
   ) {}
 
   /**
-   * Validates, stores, and observes a new connection.
+   * Registers a connection and schedules token expiry.
    *
-   * - the verified token expiry arms a timer that terminates the socket later
-   * - expiry and `close` both call the identity-checked release, so registry
-   *   removal and the disconnect fan-out happen exactly once
-   *
-   * @param params Socket, parsed connection IDs, and token expiry.
-   * @return Registration result.
+   * @param params Connection details and token expiry.
+   * @return Registration outcome.
    */
   handleConnection(params: ConnectionParams): RegisterSessionResult {
     const { socket, userId, clientId, expiresAt } = params;
@@ -91,7 +80,7 @@ export class WsService implements OnModuleDestroy {
       return { kind: 'rejected' };
     }
     if (this.sessions.has(clientId)) {
-      // TODO: enforce cross-replica uniqueness with a conditional DynamoDB claim.
+      // TODO: Add a conditional DynamoDB claim for cross-replica uniqueness.
       this.logger.warn('Rejecting duplicate connection', clientId);
       socket.close(WS_CLOSE_POLICY_VIOLATION, 'duplicate clientId');
       return { kind: 'duplicate' };
@@ -123,10 +112,10 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Notifies all trackers without blocking session handling.
+   * Notifies trackers without blocking session handling.
    *
    * @param session Affected session.
-   * @param phase Connect or disconnect.
+   * @param phase Lifecycle phase.
    */
   private fanOut(session: Session, phase: 'connect' | 'disconnect'): void {
     const event: SessionLifecycleEvent = {
@@ -154,11 +143,11 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Invokes one lifecycle tracker.
+   * Notifies one tracker.
    *
    * @param tracker Tracker to notify.
-   * @param event Lifecycle data.
-   * @param phase Connect or disconnect.
+   * @param event Session event.
+   * @param phase Lifecycle phase.
    */
   private async notifyTracker(
     tracker: SessionTracker,
@@ -173,10 +162,10 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Adds a client to its user's membership index.
+   * Adds a client to the user's index.
    *
    * @param userId Session owner.
-   * @param clientId Client key.
+   * @param clientId Client ID.
    */
   private trackMembership(userId: UserId, clientId: ClientId): void {
     let members = this.userClients.get(userId);
@@ -188,10 +177,10 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Removes a client from its user's membership index.
+   * Removes a client from the user's index.
    *
    * @param userId Session owner.
-   * @param clientId Client key.
+   * @param clientId Client ID.
    */
   private untrackMembership(userId: UserId, clientId: ClientId): void {
     const members = this.userClients.get(userId);
@@ -205,23 +194,19 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Counts a user's local sessions.
+   * Counts the user's local sessions.
    *
    * @param userId User to count.
-   * @return Number of local sessions.
+   * @return Local session count.
    */
   private countUserSessions(userId: UserId): number {
     return this.userClients.get(userId)?.size ?? 0;
   }
 
   /**
-   * Arms the timer that terminates the socket when its token expires.
+   * Schedules socket termination at token expiry.
    *
-   * - waits at most `MAX_TIMER_DELAY_MS` per call because longer delays fire
-   *   immediately; the timer re-arms against the remaining time
-   * - an already stale expiry closes on the spot.
-   *
-   * @param session Session to expire.
+   * @param session Session to schedule.
    * @return Nothing.
    */
   private scheduleExpiry(session: Session): void {
@@ -237,9 +222,9 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Expires the session, or re-arms when the capped wait ended early.
+   * Re-arms early timers or expires the session.
    *
-   * @param session Session the timer belongs to.
+   * @param session Timed session.
    * @return Nothing.
    */
   private handleExpiryTimer(session: Session): void {
@@ -253,11 +238,6 @@ export class WsService implements OnModuleDestroy {
   /**
    * Releases an expired session and terminates its socket.
    *
-   * - removal happens before the fan-out, so trackers see the real remaining
-   *   session count even when several sessions expire together
-   * - terminating skips the close handshake, so an expired client cannot keep
-   *   sending frames while the socket closes
-   *
    * @param session Expired session.
    * @return Nothing.
    */
@@ -270,15 +250,10 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Removes a session from the registry and fans its disconnect out once.
+   * Removes a session and notifies trackers once.
    *
-   * - the registry is the source of truth: a close arriving after expiry, or
-   *   for a replaced `clientId`, finds no matching entry and does nothing
-   * - counts the user's sessions after removal so trackers always see the
-   *   remaining total
-   *
-   * @param session Session leaving the registry.
-   * @return Whether this call performed the release.
+   * @param session Session to remove.
+   * @return Whether the session was removed.
    */
   private release(session: Session): boolean {
     if (this.sessions.get(session.clientId) !== session) {
@@ -292,9 +267,9 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Cancels a pending expiry timer, if any.
+   * Cancels the session's expiry timer.
    *
-   * @param session Session whose timer to clear.
+   * @param session Session to clear.
    * @return Nothing.
    */
   private clearExpiryTimer(session: Session): void {
@@ -306,7 +281,7 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Clears every pending expiry timer on shutdown.
+   * Clears all expiry timers on shutdown.
    *
    * @return Nothing.
    */
@@ -319,8 +294,8 @@ export class WsService implements OnModuleDestroy {
   /**
    * Looks up a session by client ID.
    *
-   * @param clientId Session key.
-   * @return The session, if present.
+   * @param clientId Session ID.
+   * @return The session, if found.
    */
   getSession(clientId: ClientId): Session | undefined {
     return this.sessions.get(clientId);
@@ -329,18 +304,18 @@ export class WsService implements OnModuleDestroy {
   /**
    * Returns the active session count.
    *
-   * @return Number of sessions.
+   * @return Session count.
    */
   getSessionCount(): number {
     return this.sessions.size;
   }
 
   /**
-   * Sends a JSON message to a connected client.
+   * Sends JSON to a connected client.
    *
-   * @param clientId Recipient session key.
+   * @param clientId Recipient session ID.
    * @param message Payload to send.
-   * @return Whether the message was sent.
+   * @return Whether sending succeeded.
    */
   sendToClient(clientId: ClientId, message: unknown): boolean {
     const session = this.sessions.get(clientId);
@@ -372,12 +347,12 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Publishes a broadcast to a user's sessions across replicas.
+   * Publishes a message to the user's sessions across replicas.
    *
-   * @param userId Recipient user.
+   * @param userId Recipient.
    * @param message Payload to broadcast.
-   * @param excludeClientId Optional origin client to exclude.
-   * @return Resolves when publishing completes.
+   * @param excludeClientId Optional client to exclude.
+   * @return Resolves when published.
    */
   async sendToUser(
     userId: UserId,
@@ -405,12 +380,12 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Delivers a message to a user's local sessions.
+   * Delivers a message to the user's local sessions.
    *
-   * @param userId Recipient user.
+   * @param userId Recipient.
    * @param message Payload to send.
-   * @param excludeClientId Optional origin client to exclude.
-   * @return Number of sessions reached.
+   * @param excludeClientId Optional client to exclude.
+   * @return Sessions reached.
    */
   sendToLocalUser(
     userId: UserId,
@@ -434,12 +409,12 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Parses an inbound message and routes valid sends.
+   * Parses and routes an inbound message.
    *
-   * @param userId Sending user.
-   * @param clientId Sending client.
-   * @param data Raw socket payload.
-   * @return Nothing; delivery failures are reported with a NACK.
+   * @param userId Sender.
+   * @param clientId Sender's client.
+   * @param data Socket payload.
+   * @return Nothing; failures receive a NACK.
    */
   private handleMessage(
     userId: UserId,
@@ -487,7 +462,7 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Sends a rejection frame to the origin client.
+   * Sends a rejection to the client.
    *
    * @param clientId Client to notify.
    * @param reason Rejection reason.
@@ -498,7 +473,7 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Logs socket errors, distinguishing oversized frames.
+   * Logs socket errors, including oversized frames.
    *
    * @param userId Affected user.
    * @param clientId Affected client.
