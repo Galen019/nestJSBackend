@@ -22,12 +22,6 @@ lerna-debug.log*
 !.vscode/extensions.json
 *.sublime*
 
-# dotenv
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
 
 # coverage
 coverage
