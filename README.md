@@ -26,4 +26,4 @@ flowchart LR
 
 See `docker-compose.yml` for the local wiring and `AGENTS.md` for repo conventions.
 
-99% generated from opencode + muse spark 1.3
+99% generated from opencode
