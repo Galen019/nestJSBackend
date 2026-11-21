@@ -24,6 +24,53 @@ flowchart LR
 | Metrics | Prometheus | NestJS App | HTTP scrape `app:9464/metrics` | Standalone scrape server: HTTP `http_requests_total`, `http_request_duration_seconds`, `http_request_size_bytes`, `http_response_size_bytes`, and `http_in_flight_requests`, plus prom-client default `nodejs_*` / `process_*` runtime metrics |
 | Dashboards | Grafana | Prometheus | PromQL HTTP :9090 | UI on :3001 (container :3000), provisioned Prometheus datasource + Node.js dashboard |
 
+## Kind lab
+
+Prerequisites: Docker, kind, kubectl, and helm. From the repo root:
+
+```bash
+bash kind/bootstrap-kind.sh
+```
+
+The script creates the `backend-lab` cluster if needed, selects the `kind-backend-lab` context, installs Envoy Gateway and Argo CD, builds and loads `productionbackend:local`, and applies the Argo CD `Application`. Argo CD then syncs `k8s/` from the `main` branch of `https://github.com/Galen019/nestJSBackend.git` into the `backend-lab` namespace. Local manifest edits are not deployed until they are pushed.
+
+If the cluster already exists but was created without `kind/kind-config.yaml`, the host port mapping will be missing. Recreate it before running the script:
+
+```bash
+kind delete cluster --name backend-lab
+bash kind/bootstrap-kind.sh
+```
+
+Envoy Gateway maps the kind node port `30080` to `127.0.0.1:8080`. Add the route hostnames to `/etc/hosts` (or `C:\Windows\System32\drivers\etc\hosts` on Windows):
+
+```text
+127.0.0.1 app.localhost argocd.localhost grafana.localhost prometheus.localhost jaeger.localhost
+```
+
+The gateway exposes these URLs:
+
+| Service | URL |
+| --- | --- |
+| Backend API | `http://app.localhost:8080` |
+| Argo CD | `http://argocd.localhost:8080` |
+| Grafana | `http://grafana.localhost:8080` |
+| Prometheus | `http://prometheus.localhost:8080` |
+| Jaeger | `http://jaeger.localhost:8080` |
+
+The bootstrap installs Argo CD with `server.insecure=true`, so its HTTP route works without TLS. Log in as `admin` with the password from:
+
+```bash
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d
+```
+
+Grafana uses `admin` / `admin`. To check the sync and workload state:
+
+```bash
+kubectl get application -n argocd
+kubectl get pods -n backend-lab
+```
+
 See `docker-compose.yml` for the local wiring and `AGENTS.md` for repo conventions.
 
 99% generated from opencode
