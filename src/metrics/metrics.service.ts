@@ -1,13 +1,13 @@
 /**
  * Prometheus registry, HTTP observation, and scrape server.
  *
- * - Owns a dedicated prom-client Registry (never the global register)
+ * - Owns a dedicated Prometheus Registry (never the global register)
  * - Exposes http_requests_total, http_request_duration_seconds,
  *   http_request_size_bytes, and http_response_size_bytes with
  *   method/route/status_code labels for the middleware
  * - Tracks in-flight requests as http_in_flight_requests via an idempotent
  *   release callback
- * - Registers prom-client default Node.js/process metrics (nodejs_*, process_*)
+ * - Registers default Node.js/process metrics (nodejs_*, process_*)
  *   on the same registry for the runtime dashboard
  * - Starts the standalone scrape server onModuleInit when enabled; the
  *   server is best-effort, bind failures are logged and the API keeps serving
@@ -32,7 +32,7 @@ import {
   Registry,
   Summary,
   collectDefaultMetrics,
-} from 'prom-client';
+} from '@prometheus-io/client';
 import {
   HISTOGRAM_BUCKETS,
   HTTP_IN_FLIGHT_REQUESTS,
