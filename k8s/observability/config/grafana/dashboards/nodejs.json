@@ -120,12 +120,12 @@
       },
       "targets": [
         {
-          "expr": "(\n        (   \n                sum(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"})\n                + (\n                        sum(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$tolerated\",status_code=~\"^2..$\"})\n                        - sum(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"})\n                ) / 2\n        ) / sum(http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^2..$\"})\n) * 100",
+          "expr": "(\n        (   \n                sum(increase(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"}[$interval]))\n                + (\n                        sum(increase(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$tolerated\",status_code=~\"^2..$\"}[$interval]))\n                        - sum(increase(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"}[$interval]))\n                ) / 2\n        ) / sum(increase(http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^2..$\"}[$interval]))\n) * 100",
           "legendFormat": "score",
           "refId": "A"
         }
       ],
-      "title": "Apdex Score: target $target s, tolerated $tolerated s",
+      "title": "Apdex Score: target $target s, tolerated $tolerated s in $interval",
       "type": "stat"
     },
     {
@@ -263,12 +263,12 @@
       },
       "targets": [
         {
-          "expr": "sum(http_request_duration_seconds_count{instance=~\"$instance\"})",
+          "expr": "sum(increase(http_request_duration_seconds_count{instance=~\"$instance\"}[$interval]))",
           "instant": false,
           "refId": "A"
         }
       ],
-      "title": "Requests",
+      "title": "Requests in $interval",
       "type": "stat"
     },
     {
@@ -339,12 +339,12 @@
       },
       "targets": [
         {
-          "expr": "(\n\tsum(\n\t\thttp_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^[45]..$\"} OR on() vector(0)\n\t) / \n\tsum(\n\t\thttp_request_duration_seconds_count{instance=~\"$instance\"}\n\t)\n)*100",
+          "expr": "(sum(increase(http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^[45]..$\"}[$interval])) or on() vector(0)) / sum(increase(http_request_duration_seconds_count{instance=~\"$instance\"}[$interval])) * 100",
           "legendFormat": "error %",
           "refId": "A"
         }
       ],
-      "title": "Error",
+      "title": "Error % in $interval",
       "type": "stat"
     },
     {
@@ -407,12 +407,12 @@
       },
       "targets": [
         {
-          "expr": "sum(http_response_size_bytes_sum{instance=~\"$instance\"}) + sum(http_request_size_bytes_sum{instance=~\"$instance\"})",
+          "expr": "sum(increase(http_response_size_bytes_sum{instance=~\"$instance\"}[$interval])) + sum(increase(http_request_size_bytes_sum{instance=~\"$instance\"}[$interval]))",
           "instant": false,
           "refId": "A"
         }
       ],
-      "title": "Transferred",
+      "title": "Transferred in $interval",
       "type": "stat"
     },
     {
@@ -555,7 +555,8 @@
           "refId": "A"
         }
       ],
-      "title": "Restarts in $restarts_interval",
+      "description": "Counts restart events on currently selected instance series. A pod replacement creates a new instance name and is not counted as a restart.",
+      "title": "Total process restarts across selected instances in $restarts_interval",
       "type": "stat"
     },
     {
@@ -638,12 +639,12 @@
       },
       "targets": [
         {
-          "expr": "(\n        (   \n                sum(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"})\n                + (\n                        sum(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$tolerated\",status_code=~\"^2..$\"})\n                        - sum(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"})\n                ) / 2\n        ) / sum(http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^2..$\"})\n) * 100",
+          "expr": "(\n        (   \n                sum(increase(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"}[$interval]))\n                + (\n                        sum(increase(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$tolerated\",status_code=~\"^2..$\"}[$interval]))\n                        - sum(increase(http_request_duration_seconds_bucket{instance=~\"$instance\",le=\"$target\",status_code=~\"^2..$\"}[$interval]))\n                ) / 2\n        ) / sum(increase(http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^2..$\"}[$interval]))\n) * 100",
           "legendFormat": "score",
           "refId": "A"
         }
       ],
-      "title": "Apdex Score: target $target s, tolerated $tolerated s",
+      "title": "Apdex Score: target $target s, tolerated $tolerated s in $interval",
       "type": "timeseries"
     },
     {
@@ -849,12 +850,12 @@
       },
       "targets": [
         {
-          "expr": "sum(http_response_size_bytes_sum{instance=~\"$instance\"}) by (route)",
+          "expr": "sum(increase(http_response_size_bytes_sum{instance=~\"$instance\"}[$interval])) by (route)",
           "legendFormat": "{{route}}",
           "refId": "A"
         }
       ],
-      "title": "Response Size",
+      "title": "Response Size in $interval",
       "type": "timeseries"
     },
     {
@@ -917,12 +918,12 @@
       },
       "targets": [
         {
-          "expr": "sum(http_request_duration_seconds_count{instance=~\"$instance\"}) by (status_code)",
+          "expr": "sum(increase(http_request_duration_seconds_count{instance=~\"$instance\"}[$interval])) by (status_code)",
           "legendFormat": "{{status_code}}",
           "refId": "A"
         }
       ],
-      "title": "Code Count",
+      "title": "Code Count in $interval",
       "type": "timeseries"
     },
     {
@@ -985,12 +986,12 @@
       },
       "targets": [
         {
-          "expr": "sum(http_request_duration_seconds_count{instance=~\"$instance\"}) by (route)",
+          "expr": "sum(increase(http_request_duration_seconds_count{instance=~\"$instance\"}[$interval])) by (route)",
           "legendFormat": "{{route}}",
           "refId": "A"
         }
       ],
-      "title": "Request Count",
+      "title": "Request Count in $interval",
       "type": "timeseries"
     },
     {
@@ -1182,7 +1183,7 @@
       ],
       "targets": [
         {
-          "expr": "topk(5, sum by (route)(http_request_duration_seconds_sum{instance=~\"$instance\"}))",
+          "expr": "topk(5, sum by (route) (increase(http_request_duration_seconds_sum{instance=~\"$instance\"}[$interval])))",
           "instant": true,
           "legendFormat": "{{route}}",
           "refId": "A"
@@ -1190,7 +1191,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Top 5 Request Duration",
+      "title": "Top 5 Request Duration in $interval",
       "transform": "timeseries_aggregations",
       "type": "table",
       "datasource": {
@@ -1245,7 +1246,7 @@
       ],
       "targets": [
         {
-          "expr": "topk(5, sum by (route)(http_request_duration_seconds_sum{instance=~\"$instance\",status_code=~\"^[23]..$\"}))",
+          "expr": "topk(5, sum by (route) (increase(http_request_duration_seconds_sum{instance=~\"$instance\",status_code=~\"^[23]..$\"}[$interval])))",
           "instant": true,
           "legendFormat": "{{route}}",
           "refId": "A"
@@ -1253,7 +1254,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Top 5 Success Duration",
+      "title": "Top 5 Success Duration in $interval",
       "transform": "timeseries_aggregations",
       "type": "table",
       "datasource": {
@@ -1308,7 +1309,7 @@
       ],
       "targets": [
         {
-          "expr": "topk(5, sum by (route)(http_request_duration_seconds_sum{instance=~\"$instance\",status_code=~\"^[45]..$\"}))",
+          "expr": "topk(5, sum by (route) (increase(http_request_duration_seconds_sum{instance=~\"$instance\",status_code=~\"^[45]..$\"}[$interval])))",
           "instant": true,
           "legendFormat": "{{route}}",
           "refId": "A"
@@ -1316,7 +1317,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Top 5 Error Duration",
+      "title": "Top 5 Error Duration in $interval",
       "transform": "timeseries_aggregations",
       "type": "table",
       "datasource": {
@@ -1371,7 +1372,7 @@
       ],
       "targets": [
         {
-          "expr": "topk(5, sum by (route)(http_request_duration_seconds_count{instance=~\"$instance\"}))",
+          "expr": "topk(5, sum by (route) (increase(http_request_duration_seconds_count{instance=~\"$instance\"}[$interval])))",
           "instant": true,
           "legendFormat": "{{route}}",
           "refId": "A"
@@ -1379,7 +1380,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Top 5 Request Count",
+      "title": "Top 5 Request Count in $interval",
       "transform": "timeseries_aggregations",
       "type": "table",
       "datasource": {
@@ -1434,7 +1435,7 @@
       ],
       "targets": [
         {
-          "expr": "topk(5, http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^[23]..$\"})",
+          "expr": "topk(5, sum by (route, status_code) (increase(http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^[23]..$\"}[$interval])))",
           "instant": true,
           "legendFormat": "({{status_code}}) {{route}}",
           "refId": "A"
@@ -1442,7 +1443,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Top 5 Success Count",
+      "title": "Top 5 Success Count in $interval",
       "transform": "timeseries_aggregations",
       "type": "table",
       "datasource": {
@@ -1497,7 +1498,7 @@
       ],
       "targets": [
         {
-          "expr": "topk(5, http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^[45]..$\"})",
+          "expr": "topk(5, sum by (route, status_code) (increase(http_request_duration_seconds_count{instance=~\"$instance\",status_code=~\"^[45]..$\"}[$interval])))",
           "instant": true,
           "legendFormat": "({{status_code}}) {{route}}",
           "refId": "A"
@@ -1505,7 +1506,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Top 5 Error Count",
+      "title": "Top 5 Error Count in $interval",
       "transform": "timeseries_aggregations",
       "type": "table",
       "datasource": {
@@ -1590,17 +1591,17 @@
               "expr": "nodejs_eventloop_lag_seconds{instance=~\"$instance\"}",
               "hide": false,
               "instant": false,
-              "legendFormat": "last",
+              "legendFormat": "{{instance}} last",
               "refId": "A"
             },
             {
               "expr": "nodejs_eventloop_lag_p99_seconds{instance=~\"$instance\"}",
-              "legendFormat": "p99",
+              "legendFormat": "{{instance}} p99",
               "refId": "B"
             },
             {
               "expr": "nodejs_eventloop_lag_p50_seconds{instance=~\"$instance\"}",
-              "legendFormat": "p50",
+              "legendFormat": "{{instance}} p50",
               "refId": "C"
             }
           ],
@@ -1669,7 +1670,7 @@
           "targets": [
             {
               "expr": "rate(process_cpu_seconds_total{instance=~\"$instance\"}[$interval])",
-              "legendFormat": "cpu",
+              "legendFormat": "{{instance}} cpu",
               "refId": "A"
             }
           ],
@@ -1738,12 +1739,12 @@
           "targets": [
             {
               "expr": "process_virtual_memory_bytes{instance=~\"$instance\"}",
-              "legendFormat": "virtual memory",
+              "legendFormat": "{{instance}} virtual memory",
               "refId": "A"
             },
             {
               "expr": "process_heap_bytes{instance=~\"$instance\"}",
-              "legendFormat": "heap memory",
+              "legendFormat": "{{instance}} heap memory",
               "refId": "B"
             }
           ],
@@ -1880,12 +1881,12 @@
           "targets": [
             {
               "expr": "nodejs_active_handles_total{instance=~\"$instance\"}",
-              "legendFormat": "Active Handler",
+              "legendFormat": "{{instance}} Active Handler",
               "refId": "A"
             },
             {
               "expr": "nodejs_active_requests_total{instance=~\"$instance\"}",
-              "legendFormat": "Active Request",
+              "legendFormat": "{{instance}} Active Request",
               "refId": "B"
             }
           ],
@@ -1954,12 +1955,12 @@
           "targets": [
             {
               "expr": "rate(nodejs_eventloop_utilization_summary_sum{instance=~\"$instance\"}[$interval]) / rate(nodejs_eventloop_utilization_summary_count{instance=~\"$instance\"}[$interval])",
-              "legendFormat": "average",
+              "legendFormat": "{{instance}} average",
               "refId": "A"
             },
             {
               "expr": "nodejs_eventloop_utilization_summary{instance=~\"$instance\",quantile=\"0.99\"}",
-              "legendFormat": "p99",
+              "legendFormat": "{{instance}} p99",
               "refId": "B"
             }
           ],
@@ -2046,7 +2047,7 @@
           "targets": [
             {
               "expr": "rate(nodejs_gc_duration_seconds_sum{instance=~\"$instance\"}[$interval])",
-              "legendFormat": "{{kind}}",
+              "legendFormat": "{{instance}} {{kind}}",
               "refId": "A"
             }
           ],
@@ -2115,7 +2116,7 @@
           "targets": [
             {
               "expr": "rate(nodejs_gc_duration_seconds_count{instance=~\"$instance\"}[$interval])",
-              "legendFormat": "{{kind}}",
+              "legendFormat": "{{instance}} {{kind}}",
               "refId": "A"
             }
           ],
@@ -2184,7 +2185,7 @@
           "targets": [
             {
               "expr": "nodejs_gc_duration_seconds_sum{instance=~\"$instance\"}",
-              "legendFormat": "{{kind}}",
+              "legendFormat": "{{instance}} {{kind}}",
               "refId": "A"
             }
           ],
@@ -2253,7 +2254,7 @@
           "targets": [
             {
               "expr": "nodejs_gc_duration_seconds_count{instance=~\"$instance\"}",
-              "legendFormat": "{{kind}}",
+              "legendFormat": "{{instance}} {{kind}}",
               "refId": "A"
             }
           ],
@@ -2321,22 +2322,22 @@
           "targets": [
             {
               "expr": "nodejs_heap_size_total_bytes{instance=~\"$instance\"}",
-              "legendFormat": "total",
+              "legendFormat": "{{instance}} total",
               "refId": "A"
             },
             {
               "expr": "nodejs_heap_size_used_bytes{instance=~\"$instance\"}",
-              "legendFormat": "used",
+              "legendFormat": "{{instance}} used",
               "refId": "B"
             },
             {
               "expr": "process_resident_memory_bytes{instance=~\"$instance\"}",
-              "legendFormat": "resident",
+              "legendFormat": "{{instance}} resident",
               "refId": "C"
             },
             {
               "expr": "nodejs_external_memory_bytes{instance=~\"$instance\"}",
-              "legendFormat": "external",
+              "legendFormat": "{{instance}} external",
               "refId": "D"
             }
           ],
@@ -2404,7 +2405,7 @@
           "targets": [
             {
               "expr": "nodejs_heap_space_size_used_bytes{instance=~\"$instance\"}",
-              "legendFormat": "{{space}}",
+              "legendFormat": "{{instance}} {{space}}",
               "refId": "A"
             }
           ],
@@ -2676,5 +2677,5 @@
   "timezone": "",
   "title": "Node.js Dashboard",
   "uid": "3J_78b6Zz",
-  "version": 6
+  "version": 7
 }
