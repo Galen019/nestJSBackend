@@ -86,7 +86,11 @@ Open:
 ```
 http://localhost:9090
 ```
-Check Status > Targets shows `app:9464` UP.
+Check Status > Targets shows one `app` target per ready pod (instance = pod name), all UP.
+Confirm the discovered endpoints:
+```
+kubectl -n backend-lab get endpointslices -l kubernetes.io/service-name=app
+```
 
 ## 10. Run the Redis probe
 With the application available:

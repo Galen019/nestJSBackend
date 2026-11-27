@@ -1,0 +1,39 @@
+# Prometheus service discovery permissions, scoped to the lab namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-sd
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+rules:
+  - apiGroups: ['']
+    resources: ['pods', 'services']
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['discovery.k8s.io']
+    resources: ['endpointslices']
+    verbs: ['get', 'list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-sd
+  namespace: backend-lab
+  labels:
+    app.kubernetes.io/part-of: productionBackend
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-sd
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: backend-lab
