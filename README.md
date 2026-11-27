@@ -60,8 +60,11 @@ The gateway exposes these URLs:
 The bootstrap installs Argo CD with `server.insecure=true`, so its HTTP route works without TLS. Log in as `admin` with the password from:
 
 ```bash
-kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath='{.data.password}' | base64 -d
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
+```
+
+```powershell
+[System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}')))
 ```
 
 Grafana uses `admin` / `admin`. To check the sync and workload state:
