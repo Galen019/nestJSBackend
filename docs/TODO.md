@@ -1,9 +1,5 @@
 # TODO
 
-## Add DynamoDB and S3 containers
+## Multiple replicas of app server
 
 ## Linux experimentation for SRE roles
-
-## Add Grafana
-
-## Add Ingress controller
