@@ -13,10 +13,12 @@ import { vi } from 'vitest';
 import type { SetOptions } from 'redis';
 import { AppModule } from './../src/app.module';
 import { createGlobalValidationPipe } from './../src/app.pipes';
+import { CLUSTER_REDIS_CLIENT } from './../src/cluster/cluster.constants';
 import { DynamoService } from './../src/dynamo/dynamo.service';
 import { RedisService, type RedisEntry } from './../src/redis/redis.service';
 import { USER_TOPIC_SUBSCRIBER } from './../src/user-topics/user-topic.service';
 import { TEST_JWT_AUDIENCE, TEST_JWT_ISSUER } from './auth-test.helper';
+import { createClusterFake } from './cluster-test.helper';
 import { createDynamoFake, type DynamoFake } from './dynamo-test.helper';
 import { createSubscriberFake } from './subscriber-test.helper';
 
@@ -77,6 +79,8 @@ export async function createTestApp(): Promise<TestAppContext> {
     .useValue(dynamoFake)
     .overrideProvider(USER_TOPIC_SUBSCRIBER)
     .useValue(subscriberFake)
+    .overrideProvider(CLUSTER_REDIS_CLIENT)
+    .useValue(createClusterFake().client)
     .compile();
 
   const app = moduleFixture.createNestApplication();

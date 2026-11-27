@@ -31,6 +31,8 @@ export interface ConnectionParams {
   clientId: ClientId | undefined;
   /** Token expiry in epoch milliseconds. */
   expiresAt: number;
+  /** Cluster claim token, when the gateway claimed this client ID. */
+  claimToken?: string;
 }
 
 /**
@@ -45,6 +47,12 @@ export interface Session {
   expiresAt: number;
   /** Pending expiry timer, cleared on release. */
   expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Cluster claim token to release on disconnect, when one was claimed. */
+  claimToken: string | undefined;
+  /** Periodic claim renewal, cleared on release. */
+  claimTimer: ReturnType<typeof setInterval> | undefined;
+  /** Settled tracker fan-out for the session's current lifecycle phase. */
+  trackerPending: Promise<void>;
 }
 
 /** DI token for the ordered session-tracker fan-out list. */

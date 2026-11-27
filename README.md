@@ -24,6 +24,10 @@ flowchart LR
 | Metrics | Prometheus | NestJS App | Kubernetes EndpointSlice discovery, one target per ready app pod on :9464 (Compose uses a static `app:9464` target) | Standalone scrape server: HTTP `http_requests_total`, `http_request_duration_seconds`, `http_request_size_bytes`, `http_response_size_bytes`, and `http_in_flight_requests`, plus `@prometheus-io/client` default `nodejs_*` / `process_*` runtime metrics |
 | Dashboards | Grafana | Prometheus | PromQL HTTP :9090 | UI on :3001 (container :3000), provisioned Prometheus datasource + Node.js dashboard |
 
+## Running multiple replicas
+
+WebSocket sessions stay local to each replica, while Redis owns short-lived client claims that each session renews, and DynamoDB remains the presence source. The load balancer must support WebSocket upgrades. Every replica needs Redis access for claims and user fan-out. Give pods a termination grace period longer than the shutdown drain so in-flight connections can close with 1001. Prometheus must scrape `/metrics` on port 9464 of every replica.
+
 ## Kind lab
 
 Prerequisites: Docker, kind, kubectl, and helm. From the repo root:
@@ -59,10 +63,12 @@ The gateway exposes these URLs:
 
 The bootstrap installs Argo CD with `server.insecure=true`, so its HTTP route works without TLS. Log in as `admin` with the password from:
 
+Bash
 ```bash
 kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d
 ```
 
+Powershell
 ```powershell
 [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String((kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}')))
 ```

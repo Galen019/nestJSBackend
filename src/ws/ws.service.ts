@@ -1,5 +1,7 @@
 /**
  * Manages WebSocket sessions and delivery.
+ *
+ * - local maps own live sockets; Redis claims own client IDs across replicas
  */
 
 import {
@@ -10,6 +12,8 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
+import { CLAIM_RENEW_INTERVAL_MS } from '../cluster/cluster.constants';
+import { ClusterService } from '../cluster/cluster.service';
 import { REDIS_CLIENT } from '../redis/redis.constants';
 import type { PublisherClient } from '../user-topics/publisher-client';
 import {
@@ -30,6 +34,7 @@ import {
 } from './session.interface';
 import {
   MAX_TIMER_DELAY_MS,
+  WS_CLOSE_GOING_AWAY,
   WS_CLOSE_MESSAGE_TOO_BIG,
   isWsPayloadTooBigError,
 } from './ws.constants';
@@ -40,9 +45,11 @@ export const WS_CLOSE_POLICY_VIOLATION = 1008;
 /** Maximum payload length in logs. */
 const MAX_LOGGED_PAYLOAD_CHARS = 500;
 
-/** Session registration outcome. */
+/** Session registration outcome, carrying the connect fan-out on success. */
 export type RegisterSessionResult =
-  { kind: 'registered' } | { kind: 'duplicate' } | { kind: 'rejected' };
+  | { kind: 'registered'; pending: Promise<void> }
+  | { kind: 'duplicate' }
+  | { kind: 'rejected' };
 
 /**
  * Stores sessions and notifies trackers.
@@ -52,18 +59,22 @@ export class WsService implements OnModuleDestroy {
   private readonly logger = new Logger(WsService.name);
   private readonly sessions = new Map<ClientId, Session>();
   private readonly userClients = new Map<UserId, Set<ClientId>>();
+  private readonly claimReleases = new Set<Promise<void>>();
+  private draining = false;
 
   /**
    * Creates the session registry.
    *
    * @param trackers Session observers.
    * @param publisher Redis publisher.
+   * @param cluster Cluster claims.
    */
   constructor(
     @Inject(SESSION_TRACKERS)
     private readonly trackers: SessionTracker[],
     @Inject(REDIS_CLIENT)
     private readonly publisher: PublisherClient,
+    private readonly cluster: ClusterService,
   ) {}
 
   /**
@@ -73,29 +84,37 @@ export class WsService implements OnModuleDestroy {
    * @return Registration outcome.
    */
   handleConnection(params: ConnectionParams): RegisterSessionResult {
-    const { socket, userId, clientId, expiresAt } = params;
+    const { socket, userId, clientId } = params;
+    if (this.draining) {
+      this.logger.warn('Rejecting connection while draining');
+      socket.close(WS_CLOSE_POLICY_VIOLATION, 'server shutting down');
+      return { kind: 'rejected' };
+    }
     if (userId === undefined || clientId === undefined) {
       this.logger.warn('Rejecting connection with missing userId/clientId');
       socket.close(WS_CLOSE_POLICY_VIOLATION, 'missing userId/clientId');
       return { kind: 'rejected' };
     }
     if (this.sessions.has(clientId)) {
-      // TODO: Add a conditional DynamoDB claim for cross-replica uniqueness.
       this.logger.warn('Rejecting duplicate connection', clientId);
       socket.close(WS_CLOSE_POLICY_VIOLATION, 'duplicate clientId');
       return { kind: 'duplicate' };
     }
+    const presenceToken = randomUUID();
+    this.trackMembership(userId, clientId);
+    const pending = this.fanOut({ userId, clientId, presenceToken }, 'connect');
     const session: Session = {
       userId,
       clientId,
       socket,
-      presenceToken: randomUUID(),
-      expiresAt,
+      presenceToken,
+      expiresAt: params.expiresAt,
       expiryTimer: undefined,
+      claimToken: params.claimToken,
+      claimTimer: undefined,
+      trackerPending: pending,
     };
     this.sessions.set(clientId, session);
-    this.trackMembership(userId, clientId);
-    this.fanOut(session, 'connect');
     socket.on('message', (data: unknown) => {
       this.handleMessage(userId, clientId, data);
     });
@@ -108,7 +127,8 @@ export class WsService implements OnModuleDestroy {
     });
     this.logger.log(`${userId} #${clientId} connected`);
     this.scheduleExpiry(session);
-    return { kind: 'registered' };
+    this.startClaimRenewal(session);
+    return { kind: 'registered', pending };
   }
 
   /**
@@ -116,8 +136,12 @@ export class WsService implements OnModuleDestroy {
    *
    * @param session Affected session.
    * @param phase Lifecycle phase.
+   * @return Resolves when every tracker has settled.
    */
-  private fanOut(session: Session, phase: 'connect' | 'disconnect'): void {
+  private fanOut(
+    session: Pick<Session, 'userId' | 'clientId' | 'presenceToken'>,
+    phase: 'connect' | 'disconnect',
+  ): Promise<void> {
     const event: SessionLifecycleEvent = {
       userId: session.userId,
       clientId: session.clientId,
@@ -127,7 +151,7 @@ export class WsService implements OnModuleDestroy {
     const pending = this.trackers.map((tracker) =>
       this.notifyTracker(tracker, event, phase),
     );
-    void Promise.allSettled(pending).then((results) => {
+    return Promise.allSettled(pending).then((results) => {
       results.forEach((result, index) => {
         if (result.status === 'rejected') {
           const detail =
@@ -260,10 +284,96 @@ export class WsService implements OnModuleDestroy {
       return false;
     }
     this.clearExpiryTimer(session);
+    this.clearClaimTimer(session);
     this.sessions.delete(session.clientId);
     this.untrackMembership(session.userId, session.clientId);
-    this.fanOut(session, 'disconnect');
+    session.trackerPending = this.fanOut(session, 'disconnect');
+    this.releaseClaim(session);
     return true;
+  }
+
+  /**
+   * Releases the cluster claim without blocking socket teardown.
+   *
+   * - `ClusterService` absorbs release failures, so no second handler is needed
+   *
+   * @param session Session whose claim should be released.
+   * @return Nothing.
+   */
+  private releaseClaim(session: Session): void {
+    const { claimToken } = session;
+    if (claimToken === undefined) {
+      return;
+    }
+    const release = this.cluster.releaseClient(session.clientId, claimToken);
+    this.claimReleases.add(release);
+    void release.then(() => {
+      this.claimReleases.delete(release);
+    });
+  }
+
+  /**
+   * Starts claim renewal for a session that holds a claim.
+   *
+   * @param session Session whose claim should stay alive.
+   * @return Nothing.
+   */
+  private startClaimRenewal(session: Session): void {
+    if (session.claimToken === undefined) {
+      return;
+    }
+    session.claimTimer = setInterval(() => {
+      void this.renewClaim(session);
+    }, CLAIM_RENEW_INTERVAL_MS);
+  }
+
+  /**
+   * Renews a claim, ending the session if another replica now owns it.
+   *
+   * - Redis errors only warn; the next interval retries while the TTL lasts
+   * - a definite loss terminates the socket so only one replica keeps the ID
+   *
+   * @param session Session whose claim should be renewed.
+   * @return Nothing.
+   */
+  private async renewClaim(session: Session): Promise<void> {
+    if (session.claimToken === undefined) {
+      return;
+    }
+    let renewed: boolean;
+    try {
+      renewed = await this.cluster.renewClient(
+        session.clientId,
+        session.claimToken,
+      );
+    } catch (err: unknown) {
+      const detail = err instanceof Error ? err.message : 'unknown error';
+      this.logger.warn(
+        `Failed to renew claim for ${session.clientId}: ${detail}`,
+      );
+      return;
+    }
+    if (renewed) {
+      return;
+    }
+    this.logger.warn(`Lost claim for ${session.clientId}; terminating session`);
+    if (this.release(session)) {
+      session.socket.terminate();
+    }
+  }
+
+  /**
+   * Cancels the session's claim renewal timer.
+   *
+   * @param session Session to clear.
+   * @return Nothing.
+   */
+  private clearClaimTimer(session: Session): void {
+    if (session.claimTimer === undefined) {
+      return;
+    }
+    clearInterval(session.claimTimer);
+    session.claimTimer = undefined;
   }
 
   /**
@@ -281,14 +391,21 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Clears all expiry timers on shutdown.
+   * Drains sessions on shutdown and waits for tracker fan-out.
    *
-   * @return Nothing.
+   * @return Resolves when sessions are released and trackers have settled.
    */
-  onModuleDestroy(): void {
-    for (const session of this.sessions.values()) {
-      this.clearExpiryTimer(session);
+  async onModuleDestroy(): Promise<void> {
+    this.draining = true;
+    const pending: Promise<void>[] = [];
+    for (const session of [...this.sessions.values()]) {
+      if (!this.release(session)) {
+        continue;
+      }
+      pending.push(session.trackerPending);
+      session.socket.close(WS_CLOSE_GOING_AWAY, 'server shutting down');
     }
+    await Promise.allSettled([...pending, ...this.claimReleases]);
   }
 
   /**
@@ -302,16 +419,16 @@ export class WsService implements OnModuleDestroy {
   }
 
   /**
-   * Returns the active session count.
+   * Returns the active local session count.
    *
-   * @return Session count.
+   * @return Local session count.
    */
   getSessionCount(): number {
     return this.sessions.size;
   }
 
   /**
-   * Sends JSON to a connected client.
+   * Sends JSON to a connected local client.
    *
    * @param clientId Recipient session ID.
    * @param message Payload to send.
