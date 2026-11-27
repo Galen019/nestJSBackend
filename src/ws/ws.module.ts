@@ -6,6 +6,7 @@
 
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { ClusterModule } from '../cluster/cluster.module';
 import { PresenceModule } from '../presence/presence.module';
 import { PresenceService } from '../presence/presence.service';
 import { RedisModule } from '../redis/redis.module';
@@ -22,7 +23,13 @@ import { WsService } from './ws.service';
  * - Uses `RedisModule` for broadcasts and registers session trackers
  */
 @Module({
-  imports: [AuthModule, PresenceModule, RedisModule, UserTopicsModule],
+  imports: [
+    AuthModule,
+    ClusterModule,
+    PresenceModule,
+    RedisModule,
+    UserTopicsModule,
+  ],
   providers: [
     {
       provide: SESSION_TRACKERS,

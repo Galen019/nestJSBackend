@@ -4,8 +4,11 @@
  * - connect: session added with userId/clientId/socket/presenceToken
  * - trackers: registered fans out connect with the token and user total, never on duplicate/rejected
  * - isolation: a rejecting or throwing tracker never blocks siblings, failures log at warn
- * - lookup: getSession returns the entry, getSessionCount tracks active sessions
+ * - lookup: getSession and getSessionCount report local sessions
+ * - connect: the registered result carries the tracker fan-out promise
  * - send: routes JSON through the right socket, false for unknown/closed clients
+ * - claims: renewal, loss, and release are covered in ws.service.cluster.spec.ts
+ * - drain: covered in ws.service.lifecycle.spec.ts
  * - broadcast: sendToUser publishes one envelope to user:{userId}, failures
  *   warn and reject; sendToLocalUser fans out to every local session of the
  *   user except the excluded origin client
@@ -25,6 +28,7 @@ import { Logger } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { WebSocket } from 'ws';
+import { ClusterService } from '../cluster/cluster.service';
 import {
   createPublisherFake,
   type PublisherFake,
@@ -70,6 +74,10 @@ describe('WsService', () => {
   let service: WsService;
   let module: TestingModule | undefined;
   let publisher: PublisherFake;
+  let cluster: {
+    releaseClient: ReturnType<typeof vi.fn>;
+    renewClient: ReturnType<typeof vi.fn>;
+  };
   let tracker: {
     handleConnect: ReturnType<
       typeof vi.fn<(event: SessionLifecycleEvent) => Promise<void>>
@@ -101,11 +109,16 @@ describe('WsService', () => {
         .mockResolvedValue(undefined),
     };
     publisher = createPublisherFake();
+    cluster = {
+      releaseClient: vi.fn().mockResolvedValue(undefined),
+      renewClient: vi.fn().mockResolvedValue(true),
+    };
     module = await Test.createTestingModule({
       providers: [
         WsService,
         { provide: SESSION_TRACKERS, useValue: [...extraTrackers, tracker] },
         { provide: REDIS_CLIENT, useValue: publisher },
+        { provide: ClusterService, useValue: cluster },
       ],
     }).compile();
     return module.get<WsService>(WsService);
@@ -137,7 +150,7 @@ describe('WsService', () => {
     return fake;
   }
 
-  it('adds a session when a client connects', () => {
+  it('adds a session when a client connects', async () => {
     const { socket } = createSocketFake();
 
     const result = service.handleConnection({
@@ -147,7 +160,11 @@ describe('WsService', () => {
       expiresAt: futureExpiryMs(),
     });
 
-    expect(result).toEqual({ kind: 'registered' });
+    expect(result.kind).toBe('registered');
+    if (result.kind !== 'registered') {
+      throw new Error('Expected a registered session');
+    }
+    await expect(result.pending).resolves.toBeUndefined();
     expect(service.getSessionCount()).toBe(1);
   });
 
@@ -225,6 +242,36 @@ describe('WsService', () => {
       expiresAt: futureExpiryMs(),
     });
     expect(service.getSessionCount()).toBe(2);
+  });
+
+  it('returns the tracker fan-out promise on a registered connection', async () => {
+    let resolveTracker: (() => void) | undefined;
+    tracker.handleConnect.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveTracker = resolve;
+        }),
+    );
+    const result = service.handleConnection({
+      socket: createSocketFake().socket,
+      userId: parseUserId('user-123'),
+      clientId: parseClientId('client-456'),
+      expiresAt: futureExpiryMs(),
+    });
+    if (result.kind !== 'registered') {
+      throw new Error('Expected a registered session');
+    }
+
+    let settled = false;
+    void result.pending.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveTracker?.();
+    await result.pending;
+    expect(settled).toBe(true);
   });
 
   it('sends a message through the correct WebSocket', () => {
@@ -1142,11 +1189,11 @@ describe('WsService', () => {
       expect(duplicate.mocks.terminate).not.toHaveBeenCalled();
     });
 
-    it('clears pending expiry timers on module destroy', () => {
+    it('clears pending expiry timers on module destroy', async () => {
       const fake = connectExpiring('client-456', Date.now() + 60_000);
       expect(vi.getTimerCount()).toBe(1);
 
-      service.onModuleDestroy();
+      await service.onModuleDestroy();
 
       expect(vi.getTimerCount()).toBe(0);
       vi.advanceTimersByTime(120_000);

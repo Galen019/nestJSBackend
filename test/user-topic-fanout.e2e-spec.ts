@@ -15,6 +15,7 @@
  */
 import { Test, type TestingModule } from '@nestjs/testing';
 import { describe, it, afterEach, expect, vi } from 'vitest';
+import { ClusterService } from '../src/cluster/cluster.service';
 import { REDIS_CLIENT } from '../src/redis/redis.constants';
 import { channelFor } from '../src/user-topics/user-topic.message';
 import {
@@ -77,6 +78,13 @@ describe('user-topic fan-out (e2e)', () => {
           inject: [UserTopicService],
         },
         { provide: REDIS_CLIENT, useValue: publisher },
+        {
+          provide: ClusterService,
+          useValue: {
+            releaseClient: async (): Promise<void> => undefined,
+            renewClient: async (): Promise<boolean> => true,
+          },
+        },
         UserTopicService,
         { provide: USER_TOPIC_SUBSCRIBER, useValue: subscriber },
       ],

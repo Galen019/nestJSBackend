@@ -8,6 +8,7 @@
  */
 import { Test, type TestingModule } from '@nestjs/testing';
 import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
+import { ClusterService } from '../cluster/cluster.service';
 import { REDIS_CLIENT } from '../redis/redis.constants';
 import { buildUserTopicEnvelope } from '../user-topics/user-topic.message';
 import {
@@ -45,6 +46,13 @@ describe('WsModule', () => {
           inject: [UserTopicService],
         },
         { provide: REDIS_CLIENT, useValue: createPublisherFake() },
+        {
+          provide: ClusterService,
+          useValue: {
+            releaseClient: async (): Promise<void> => undefined,
+            renewClient: async (): Promise<boolean> => true,
+          },
+        },
         UserTopicService,
         { provide: USER_TOPIC_SUBSCRIBER, useValue: subscriber },
         WsModule,

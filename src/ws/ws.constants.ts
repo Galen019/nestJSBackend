@@ -9,6 +9,9 @@ export const DEFAULT_WS_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024;
 /** WebSocket close code for oversized frames. */
 export const WS_CLOSE_MESSAGE_TOO_BIG = 1009;
 
+/** WebSocket close code for a server draining before shutdown. */
+export const WS_CLOSE_GOING_AWAY = 1001;
+
 /**
  * Largest delay a single `setTimeout` accepts; longer values fire immediately.
  */

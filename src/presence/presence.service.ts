@@ -11,7 +11,7 @@
  * - each connect mints a per-connection `presenceToken` mirrored into its
  *   `Clients` row; disconnects delete conditionally on that token, so a slow
  *   delete landing after a fast reconnect on the same `clientId` fails its
- *   condition and leaves the fresh row intact.
+ *   condition and leaves the fresh row intact
  */
 import { Injectable, Logger } from '@nestjs/common';
 import { DeleteItemCommand, PutItemCommand } from '@aws-sdk/client-dynamodb';

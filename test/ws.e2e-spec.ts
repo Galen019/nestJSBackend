@@ -23,6 +23,7 @@ import { describe, it, beforeEach, afterEach, expect, vi } from 'vitest';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { AppModule } from './../src/app.module';
+import { CLUSTER_REDIS_CLIENT } from './../src/cluster/cluster.constants';
 import { DynamoService } from './../src/dynamo/dynamo.service';
 import { REDIS_CLIENT } from './../src/redis/redis.constants';
 import { RedisService } from './../src/redis/redis.service';
@@ -45,6 +46,7 @@ import {
   signTestToken,
   testTokenExpiresAt,
 } from './auth-test.helper';
+import { createClusterFake } from './cluster-test.helper';
 import { createDynamoFake } from './dynamo-test.helper';
 import {
   createSubscriberFake,
@@ -107,6 +109,8 @@ describe('WsGateway (e2e)', () => {
       .useValue(dynamoFake)
       .overrideProvider(USER_TOPIC_SUBSCRIBER)
       .useValue(subscriber)
+      .overrideProvider(CLUSTER_REDIS_CLIENT)
+      .useValue(createClusterFake().client)
       .compile();
 
     app = moduleFixture.createNestApplication();
