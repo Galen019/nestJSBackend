@@ -7,6 +7,7 @@ resources:
   - observability-routes.yaml
   - prometheus-deployment.yaml
   - prometheus-service.yaml
+  - prometheus-rbac.yaml
   - grafana-pvc.yaml
   - grafana-deployment.yaml
   - grafana-service.yaml
