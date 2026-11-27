@@ -53,6 +53,16 @@ if ($LASTEXITCODE -ne 0) { throw "docker build failed ($LASTEXITCODE)" }
 kind load docker-image productionbackend:local --name backend-lab
 if ($LASTEXITCODE -ne 0) { throw "kind load docker-image failed ($LASTEXITCODE)" }
 
+# The image tag does not change, so restart running pods to pick up the new build.
+$appDeployment = kubectl -n backend-lab get deployment/app --ignore-not-found -o name
+if ($LASTEXITCODE -ne 0) { throw "kubectl get deployment failed ($LASTEXITCODE)" }
+if ($appDeployment) {
+    kubectl -n backend-lab rollout restart deployment/app
+    if ($LASTEXITCODE -ne 0) { throw "kubectl rollout restart failed ($LASTEXITCODE)" }
+    kubectl -n backend-lab rollout status deployment/app --timeout=300s
+    if ($LASTEXITCODE -ne 0) { throw "kubectl rollout status failed ($LASTEXITCODE)" }
+}
+
 # Create/update the Argo CD Application
 kubectl apply -n argocd -f 'k8s\argocd\application.yaml'
 if ($LASTEXITCODE -ne 0) { throw "kubectl apply failed ($LASTEXITCODE)" }

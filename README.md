@@ -32,7 +32,7 @@ Prerequisites: Docker, kind, kubectl, and helm. From the repo root:
 bash kind/bootstrap-kind.sh
 ```
 
-The script creates the `backend-lab` cluster if needed, selects the `kind-backend-lab` context, installs Envoy Gateway and Argo CD, builds and loads `productionbackend:local`, and applies the Argo CD `Application`. Argo CD then syncs `k8s/` from the `main` branch of `https://github.com/Galen019/nestJSBackend.git` into the `backend-lab` namespace. Local manifest edits are not deployed until they are pushed.
+The script creates the `backend-lab` cluster if needed, selects the `kind-backend-lab` context, installs Envoy Gateway and Argo CD, builds and loads `productionbackend:local`, and applies the Argo CD `Application`. Argo CD then syncs `k8s/` from the `main` branch of `https://github.com/Galen019/nestJSBackend.git` into the `backend-lab` namespace. Local manifest edits are not deployed until they are pushed. Rerunning the script also restarts an existing app deployment, because the image tag does not change and loaded pods keep the old build until they are recreated.
 
 If the cluster already exists but was created without `kind/kind-config.yaml`, the host port mapping will be missing. Recreate it before running the script:
 

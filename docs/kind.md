@@ -34,6 +34,14 @@ Verify the image is available:
 docker exec backend-lab-control-plane crictl images
 ```
 
+### Updating an existing deployment
+
+The image tag stays `productionbackend:local`, so loading a rebuilt image does not restart running pods. After step 4, restart the deployment so pods pick up the new build:
+```
+kubectl -n backend-lab rollout restart deployment/app
+kubectl -n backend-lab rollout status deployment/app
+```
+
 ## 5. Deploy Kubernetes resources
 
 ```

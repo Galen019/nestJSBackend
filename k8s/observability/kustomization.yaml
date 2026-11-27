@@ -33,5 +33,6 @@ configMapGenerator:
   - name: grafana-dashboards
     namespace: backend-lab
     files:
-      # Grafana.com dashboard 12230 (Node.js Dashboard), revision 4.
+      # Grafana.com dashboard 12230 (Node.js Dashboard), revision 4, plus an
+      # Event Loop Utilization panel.
       - nodejs.json=config/grafana/dashboards/nodejs.json

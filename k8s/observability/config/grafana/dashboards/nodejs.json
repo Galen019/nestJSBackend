@@ -1004,6 +1004,80 @@
           ],
           "title": "Active Handlers/Requests",
           "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "drawStyle": "line",
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "fillOpacity": 10,
+                "gradientMode": "none",
+                "showPoints": "never",
+                "spanNulls": false,
+                "pointSize": 2,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "axisPlacement": "auto",
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                }
+              },
+              "unit": "percentunit",
+              "color": {
+                "mode": "palette-classic"
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 5,
+            "w": 8,
+            "x": 0,
+            "y": 25
+          },
+          "id": 97,
+          "options": {
+            "legend": {
+              "showLegend": true,
+              "displayMode": "list",
+              "placement": "bottom",
+              "calcs": [
+                "mean",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "expr": "rate(nodejs_eventloop_utilization_summary_sum{instance=~\"$instance\"}[$interval]) / rate(nodejs_eventloop_utilization_summary_count{instance=~\"$instance\"}[$interval])",
+              "legendFormat": "average",
+              "refId": "A"
+            },
+            {
+              "expr": "nodejs_eventloop_utilization_summary{instance=~\"$instance\",quantile=\"0.99\"}",
+              "legendFormat": "p99",
+              "refId": "B"
+            }
+          ],
+          "title": "Event Loop Utilization",
+          "type": "timeseries"
         }
       ],
       "title": "Node.js Process",
@@ -2264,11 +2338,11 @@
           }
         }
       ],
-      "title": "Express Route",
+      "title": "HTTP",
       "type": "row"
     }
   ],
-  "refresh": "5s",
+  "refresh": "10s",
   "schemaVersion": 39,
   "style": "dark",
   "tags": [

@@ -62,5 +62,11 @@ run 'Argo CD Helm install failed' helm upgrade --install argocd argo/argo-cd \
 run 'docker build failed' docker build -t productionbackend:local "$repo_root"
 run 'kind load docker-image failed' kind load docker-image productionbackend:local --name backend-lab
 
+# The image tag does not change, so restart running pods to pick up the new build.
+if kubectl -n backend-lab get deployment/app >/dev/null 2>&1; then
+    run 'kubectl rollout restart failed' kubectl -n backend-lab rollout restart deployment/app
+    run 'kubectl rollout status failed' kubectl -n backend-lab rollout status deployment/app --timeout=300s
+fi
+
 # Create or update the Argo CD Application.
 run 'kubectl apply failed' kubectl apply -n argocd -f "$argocd_application"
