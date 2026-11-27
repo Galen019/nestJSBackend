@@ -28,6 +28,63 @@ flowchart LR
 
 WebSocket sessions stay local to each replica, while Redis owns short-lived client claims that each session renews, and DynamoDB remains the presence source. The load balancer must support WebSocket upgrades. Every replica needs Redis access for claims and user fan-out. Give pods a termination grace period longer than the shutdown drain so in-flight connections can close with 1001. Prometheus must scrape `/metrics` on port 9464 of every replica.
 
+### Client claim lifecycle across two replicas
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant LB as Load balancer
+    participant A as Pod A
+    participant R as Redis
+    participant B as Pod B
+
+    Client->>LB: WS upgrade userId, clientId, token
+    LB->>A: upgrade
+    A->>R: SET ws:claim:client-1 tokenA NX EX 30
+    R-->>A: OK tokenA
+    A->>A: register S1, start expiry and renew timers
+    A->>R: EVAL RENEW tokenA at +10s
+    R-->>A: OK, expiry +40s
+    A->>R: EVAL RENEW tokenA at +20s
+    R-->>A: OK, expiry +50s
+
+    alt clean close
+        Client-->>A: close S1 at +25s
+        A->>R: EVAL RELEASE tokenA
+        R-->>A: claim deleted
+        Client->>LB: reconnect with same clientId at +26s
+        LB->>B: upgrade
+        B->>R: SET ws:claim:client-1 tokenB NX EX 30
+        R-->>B: OK tokenB
+        B->>B: register S2
+    else pod A crash, no close
+        Note over A,R: No release runs, so tokenA survives until +50s
+        Client->>LB: reconnect with same clientId at +30s
+        LB->>B: upgrade
+        B->>R: SET ws:claim:client-1 tokenB NX EX 30
+        R-->>B: null
+        B-->>Client: close 1008 duplicate clientId
+        R-->>R: key expires at +50s
+        Client->>LB: retry at +51s
+        LB->>B: upgrade
+        B->>R: SET ws:claim:client-1 tokenB NX EX 30
+        R-->>B: OK tokenB
+        B->>B: register S2, start timers
+    else stale close after reclaim
+        Note over A,R: A is partitioned at +25s, key expires at +50s
+        B->>R: SET ws:claim:client-1 tokenB NX EX 30 at +51s
+        R-->>B: OK tokenB
+        A->>R: late EVAL RELEASE tokenA at +55s
+        R-->>A: not owner, no delete
+        A->>R: EVAL RENEW tokenA at +60s
+        R-->>A: false
+        A->>A: terminate stale S1, idempotent release
+    end
+```
+
+Caption: `tokenA` fences the old owner. A clean close deletes it immediately, a crash leaves it until the 30 second TTL from the last successful renewal expires, and a late release or renewal with `tokenA` cannot affect `tokenB`.
+
 ## Kind lab
 
 Prerequisites: Docker, kind, kubectl, and helm. From the repo root:
